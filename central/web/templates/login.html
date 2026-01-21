@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="card">
+    <h2>Sign In</h2>
+    {% if auth_mode == "oidc" %}
+      <p class="meta">OIDC is enabled. Redirecting to Okta…</p>
+      <p class="meta"><a href="/login">Continue to Okta</a></p>
+    {% elif error %}
+      <p class="meta">{{ error }}</p>
+    {% endif %}
+    {% if auth_mode != "oidc" %}
+      <form method="post" action="/login">
+        <div style="margin-bottom: 1rem;">
+          <label for="email">Email</label><br />
+          <input id="email" name="email" type="email" required style="width: 100%; padding: 0.5rem;" />
+        </div>
+        <div style="margin-bottom: 1rem;">
+          <label for="password">Password</label><br />
+          <input id="password" name="password" type="password" required style="width: 100%; padding: 0.5rem;" />
+        </div>
+        <button type="submit">Sign In</button>
+      </form>
+    {% endif %}
+  </div>
+{% endblock %}

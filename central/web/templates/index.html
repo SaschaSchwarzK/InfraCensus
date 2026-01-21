@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="card">
+    <h2>System Status</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Service</th>
+          <th>Status</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Central API</td>
+          <td><span class="tag">online</span></td>
+          <td class="meta">Heartbeat active</td>
+        </tr>
+        <tr>
+          <td>Collectors</td>
+          <td><span class="tag">unknown</span></td>
+          <td class="meta">Waiting on telemetry</td>
+        </tr>
+        <tr>
+          <td>Database</td>
+          <td><span class="tag">unknown</span></td>
+          <td class="meta">Pending connection checks</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h2>Statistics</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Metric</th>
+          <th>Value</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Active Tenants</td>
+          <td>0</td>
+          <td class="meta">Placeholder</td>
+        </tr>
+        <tr>
+          <td>Registered Collectors</td>
+          <td>0</td>
+          <td class="meta">Placeholder</td>
+        </tr>
+        <tr>
+          <td>Devices Discovered</td>
+          <td>0</td>
+          <td class="meta">Placeholder</td>
+        </tr>
+        <tr>
+          <td>Scans in Last 24h</td>
+          <td>0</td>
+          <td class="meta">Placeholder</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h2>Access Model</h2>
+    <p class="meta">InfraCensus enforces permissions per tenant, with a global superadmin role for cross-tenant administration.</p>
+    <ul>
+      <li><strong>RO</strong> can view inventory and scan results.</li>
+      <li><strong>RW</strong> can schedule scans, edit device metadata, and run exports.</li>
+      <li><strong>User Admin</strong> can add/remove users and change RO/RW roles inside a tenant.</li>
+      <li><strong>Superadmin</strong> can create tenants and change global configuration.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h2>Quick Links</h2>
+    <p><a href="/tenants">Tenant overview</a> or <a href="/admin/users">User directory</a></p>
+  </div>
+{% endblock %}

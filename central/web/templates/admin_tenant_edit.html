@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="card">
+    <h2>Edit Tenant</h2>
+    {% if error %}
+      <p class="meta">{{ error }}</p>
+    {% endif %}
+    {% if tenant %}
+      <form method="post" action="/admin/tenants/{{ tenant.id }}">
+        <label for="tenant-name">Tenant name</label><br />
+        <input id="tenant-name" name="name" type="text" value="{{ tenant.name }}" required style="width: 60%; padding: 0.4rem;" />
+        <div style="margin-top: 0.5rem;">
+          <label for="tenant-description">Description</label><br />
+          <textarea id="tenant-description" name="description" style="width: 60%; padding: 0.4rem;">{{ tenant.description or "" }}</textarea>
+        </div>
+        <div style="margin-top: 0.5rem;">
+          <label for="tenant-default-scanner">Default scanner</label><br />
+          <input id="tenant-default-scanner" name="default_scanner" type="text" value="{{ tenant.default_scanner or "" }}" style="width: 60%; padding: 0.4rem;" />
+        </div>
+        <div style="margin-top: 0.5rem;">
+          <label for="tenant-interval">Default scan interval (minutes)</label><br />
+          <input id="tenant-interval" name="default_scan_interval_minutes" type="number" min="0" value="{{ tenant.default_scan_interval_minutes or "" }}" style="width: 60%; padding: 0.4rem;" />
+        </div>
+        <button type="submit">Save</button>
+      </form>
+    {% else %}
+      <p class="meta">Tenant not found.</p>
+    {% endif %}
+    <p style="margin-top: 1rem;"><a href="/admin/tenants">Back to tenants</a></p>
+  </div>
+{% endblock %}

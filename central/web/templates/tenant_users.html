@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="card">
+    <h2>Tenant {{ tenant_id }} Users</h2>
+    {% if message %}
+      <p class="meta">{{ message }}</p>
+    {% endif %}
+    {% if error %}
+      <p class="meta">Database not initialized: {{ error }}</p>
+    {% endif %}
+    <form method="post" action="/tenants/{{ tenant_id }}/users" style="margin-bottom: 1rem;">
+      <div style="margin-bottom: 0.5rem;">
+        <label for="user-email">Email</label><br />
+        <input id="user-email" name="email" type="email" required style="width: 60%; padding: 0.4rem;" />
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        <label for="user-full-name">Full name</label><br />
+        <input id="user-full-name" name="full_name" type="text" style="width: 60%; padding: 0.4rem;" />
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        <label for="user-password">Password (new users only)</label><br />
+        <input id="user-password" name="password" type="password" style="width: 60%; padding: 0.4rem;" />
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        <label for="user-role">Role</label><br />
+        <select id="user-role" name="role" style="width: 60%; padding: 0.4rem;">
+          <option value="user_admin">User Admin</option>
+          <option value="rw">Read/Write</option>
+          <option value="ro">Read Only</option>
+        </select>
+      </div>
+      <button type="submit">Add or Update User</button>
+    </form>
+    <table>
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Email</th>
+          <th>Role</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for membership in memberships %}
+          <tr>
+            <td>{{ membership.user.full_name or "" }}</td>
+            <td>{{ membership.user.email }}</td>
+            <td><span class="tag">{{ membership.role.value }}</span></td>
+            <td>
+              <form method="post" action="/tenants/{{ tenant_id }}/users/{{ membership.id }}/role" style="display: inline;">
+                <select name="role" style="padding: 0.2rem;">
+                  <option value="user_admin" {% if membership.role.value == "user_admin" %}selected{% endif %}>User Admin</option>
+                  <option value="rw" {% if membership.role.value == "rw" %}selected{% endif %}>Read/Write</option>
+                  <option value="ro" {% if membership.role.value == "ro" %}selected{% endif %}>Read Only</option>
+                </select>
+                <button type="submit">Update</button>
+              </form>
+              <form method="post" action="/tenants/{{ tenant_id }}/users/{{ membership.id }}/password" style="display: inline;">
+                <input name="password" type="password" placeholder="New password" style="padding: 0.2rem;" />
+                <button type="submit">Reset</button>
+              </form>
+              <form method="post" action="/tenants/{{ tenant_id }}/users/{{ membership.id }}/delete" style="display: inline;">
+                <button type="submit">Remove</button>
+              </form>
+            </td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="4" class="meta">No users assigned to this tenant yet.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

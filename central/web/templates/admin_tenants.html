@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="card">
+    <h2>Superadmin: Tenants</h2>
+    <p class="meta">Create tenants and apply global defaults.</p>
+    {% if message %}
+      <p class="meta">{{ message }}</p>
+    {% endif %}
+    <form method="post" action="/admin/tenants" style="margin-bottom: 1rem;">
+      <label for="tenant-name">New Tenant</label><br />
+      <input id="tenant-name" name="name" type="text" required style="width: 60%; padding: 0.4rem;" />
+      <div style="margin-top: 0.5rem;">
+        <label for="tenant-description">Description</label><br />
+        <textarea id="tenant-description" name="description" style="width: 60%; padding: 0.4rem;"></textarea>
+      </div>
+      <div style="margin-top: 0.5rem;">
+        <label for="tenant-default-scanner">Default scanner</label><br />
+        <input id="tenant-default-scanner" name="default_scanner" type="text" style="width: 60%; padding: 0.4rem;" />
+      </div>
+      <div style="margin-top: 0.5rem;">
+        <label for="tenant-interval">Default scan interval (minutes)</label><br />
+        <input id="tenant-interval" name="default_scan_interval_minutes" type="number" min="0" style="width: 60%; padding: 0.4rem;" />
+      </div>
+      <button type="submit">Create</button>
+    </form>
+    {% if error %}
+      <p class="meta">Database not initialized: {{ error }}</p>
+    {% endif %}
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for tenant in tenants %}
+          <tr>
+            <td>{{ tenant.name }}</td>
+            <td>
+              <a href="/admin/tenants/{{ tenant.id }}">Edit</a>
+              <form method="post" action="/admin/tenants/{{ tenant.id }}/delete" style="display: inline;">
+                <button type="submit">Delete</button>
+              </form>
+            </td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="2" class="meta">No tenants configured yet.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

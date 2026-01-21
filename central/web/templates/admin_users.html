@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="card">
+    <h2>Superadmin: User Directory</h2>
+    <p class="meta">Superadmins can assign users to tenants and set roles.</p>
+    {% if error %}
+      <p class="meta">Database not initialized: {{ error }}</p>
+    {% endif %}
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Superadmin</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for user in users %}
+          <tr>
+            <td>{{ user.full_name or "" }}</td>
+            <td>{{ user.email }}</td>
+            <td>{% if user.is_superadmin %}<span class="tag">yes</span>{% else %}no{% endif %}</td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="3" class="meta">No users found yet.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

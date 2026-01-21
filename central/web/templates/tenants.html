@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="card">
+    <h2>Tenants</h2>
+    {% if error %}
+      <p class="meta">Database not initialized: {{ error }}</p>
+    {% endif %}
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for tenant in tenants %}
+          <tr>
+            <td>{{ tenant.name }}</td>
+            <td><a href="/tenants/{{ tenant.id }}/users">Manage users</a></td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="2" class="meta">No tenants found yet.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}
