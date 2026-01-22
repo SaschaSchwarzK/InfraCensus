@@ -1,16 +1,26 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, Sequence
 from urllib.parse import quote_plus
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import joinedload
 
 from central.core.audit import log_audit
 from central.core.auth import highest_role
-from central.db.models import AuditLog, Collector, Tenant, TenantUser, User
+from central.db.models import (
+    AuditLog,
+    Collector,
+    Network,
+    ScanResult,
+    ScanResultVersion,
+    Site,
+    Tenant,
+    TenantUser,
+    User,
+)
 from central.db.session import get_session
 from central.core.config import settings
 from central.web.auth import (
@@ -36,6 +46,38 @@ def _safe_query(fetch: Callable[[], Iterable[Any]]) -> tuple[list[Any], Optional
         return [], str(exc)
 
 
+def _wants_json(request: Request) -> bool:
+    return "application/json" in request.headers.get("accept", "")
+
+
+def _format_dt(value: Any) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _pagination_params(request: Request) -> tuple[int, int]:
+    limit_param = request.query_params.get("limit")
+    offset_param = request.query_params.get("offset")
+    try:
+        limit = min(int(limit_param), 200) if limit_param else 50
+    except ValueError:
+        limit = 50
+    try:
+        offset = max(int(offset_param), 0) if offset_param else 0
+    except ValueError:
+        offset = 0
+    return limit, offset
+
+
+def _paginate_query(query, request: Request):
+    limit, offset = _pagination_params(request)
+    return query.limit(limit).offset(offset), limit, offset
+
+
+def _paginate_list(items: Sequence[Any], request: Request) -> list[Any]:
+    limit, offset = _pagination_params(request)
+    return list(items[offset : offset + limit])
+
+
 def _redirect_with_message(url: str, message: str) -> RedirectResponse:
     return RedirectResponse(url=f"{url}?message={quote_plus(message)}", status_code=302)
 
@@ -45,6 +87,13 @@ def home(request: Request) -> HTMLResponse:
     user = require_user(request)
     if isinstance(user, RedirectResponse):
         return user
+    if _wants_json(request):
+        return JSONResponse(
+            {
+                "status": "ok",
+                "user": {"id": user.id, "email": user.email, "is_superadmin": user.is_superadmin},
+            }
+        )
     return templates.TemplateResponse("index.html", {"request": request, "user": user})
 
 
@@ -92,15 +141,31 @@ def tenant_list(request: Request) -> HTMLResponse:
 
     def fetch() -> Iterable[Tenant]:
         with get_session() as session:
-            return (
+            query = (
                 session.query(Tenant)
                 .join(TenantUser, TenantUser.tenant_id == Tenant.id)
                 .filter(TenantUser.user_id == user.id)
-                .order_by(Tenant.name)
-                .all()
             )
+            name_filter = request.query_params.get("name")
+            if name_filter:
+                query = query.filter(Tenant.name.ilike(f"%{name_filter}%"))
+            query = query.order_by(Tenant.name)
+            query, _, _ = _paginate_query(query, request)
+            return query.all()
 
     tenants, error = _safe_query(fetch)
+    if _wants_json(request):
+        limit, offset = _pagination_params(request)
+        return JSONResponse(
+            {
+                "tenants": [
+                    {"id": tenant.id, "name": tenant.name} for tenant in tenants
+                ],
+                "error": error,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
     return templates.TemplateResponse(
         "tenants.html",
         {"request": request, "tenants": tenants, "error": error, "user": user},
@@ -115,14 +180,48 @@ def tenant_users(request: Request, tenant_id: int) -> HTMLResponse:
 
     def fetch() -> Iterable[TenantUser]:
         with get_session() as session:
-            return (
+            query = (
                 session.query(TenantUser)
                 .options(joinedload(TenantUser.user))
+                .join(User)
                 .filter(TenantUser.tenant_id == tenant_id)
-                .all()
             )
+            email_filter = request.query_params.get("email")
+            role_filter = request.query_params.get("role")
+            if email_filter:
+                query = query.filter(User.email.ilike(f"%{email_filter}%"))
+            if role_filter:
+                query = query.filter(
+                    (TenantUser.roles.ilike(f"%{role_filter}%"))
+                    | (TenantUser.role == role_filter)
+                )
+            query = query.order_by(User.email)
+            query, _, _ = _paginate_query(query, request)
+            return query.all()
 
     memberships, error = _safe_query(fetch)
+    if _wants_json(request):
+        limit, offset = _pagination_params(request)
+        return JSONResponse(
+            {
+                "tenant_id": tenant_id,
+                "memberships": [
+                    {
+                        "id": membership.id,
+                        "user_id": membership.user_id,
+                        "email": membership.user.email,
+                        "full_name": membership.user.full_name,
+                        "roles": membership.roles.split(",")
+                        if membership.roles
+                        else [membership.role.value],
+                    }
+                    for membership in memberships
+                ],
+                "error": error,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
     return templates.TemplateResponse(
         "tenant_users.html",
         {
@@ -136,11 +235,770 @@ def tenant_users(request: Request, tenant_id: int) -> HTMLResponse:
     )
 
 
-@router.post("/tenants/{tenant_id}/users", response_model=None)
-def tenant_user_add(
+@router.get("/tenants/{tenant_id}/sites", response_class=HTMLResponse)
+def tenant_sites(request: Request, tenant_id: int) -> HTMLResponse:
+    user = require_tenant_role(request, tenant_id, UserRole.read_only)
+    if not isinstance(user, User):
+        return user
+
+    def fetch() -> Iterable[Site]:
+        with get_session() as session:
+            query = session.query(Site).filter(Site.tenant_id == tenant_id)
+            name_filter = request.query_params.get("name")
+            code_filter = request.query_params.get("code")
+            if name_filter:
+                query = query.filter(Site.name.ilike(f"%{name_filter}%"))
+            if code_filter:
+                query = query.filter(Site.code.ilike(f"%{code_filter}%"))
+            query = query.order_by(Site.name)
+            query, _, _ = _paginate_query(query, request)
+            return query.all()
+
+    sites, error = _safe_query(fetch)
+    if _wants_json(request):
+        limit, offset = _pagination_params(request)
+        return JSONResponse(
+            {
+                "tenant_id": tenant_id,
+                "sites": [
+                    {
+                        "id": site.id,
+                        "name": site.name,
+                        "code": site.code,
+                        "description": site.description,
+                        "created_at": _format_dt(site.created_at),
+                    }
+                    for site in sites
+                ],
+                "error": error,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+    return templates.TemplateResponse(
+        "tenant_sites.html",
+        {
+            "request": request,
+            "sites": sites,
+            "tenant_id": tenant_id,
+            "error": error,
+            "user": user,
+            "message": request.query_params.get("message"),
+        },
+    )
+
+
+@router.post("/tenants/{tenant_id}/sites", response_model=None)
+async def tenant_site_create(
     request: Request,
     tenant_id: int,
-    email: str = Form(...),
+    name: str | None = Form(None),
+    code: str | None = Form(None),
+    description: str | None = Form(None),
+):
+    user = require_tenant_role(request, tenant_id, UserRole.read_write)
+    if not isinstance(user, User):
+        return user
+    wants_json = "application/json" in request.headers.get("accept", "")
+    if not name:
+        try:
+            payload = await request.json()
+            name = payload.get("name") if payload else None
+            code = payload.get("code") if payload else code
+            description = payload.get("description") if payload else description
+        except Exception:
+            name = None
+    if not name:
+        if wants_json:
+            return JSONResponse({"error": "Name is required"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/sites",
+            "Name is required",
+        )
+    with get_session() as session:
+        site = Site(
+            tenant_id=tenant_id,
+            name=name.strip(),
+            code=(code or "").strip() or None,
+            description=(description or "").strip() or None,
+        )
+        session.add(site)
+        session.flush()
+        log_audit(
+            actor_user_id=user.id,
+            action="tenant.site.create",
+            entity_type="site",
+            entity_id=site.id,
+            details={"name": site.name},
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse({"status": "created", "site_id": site.id, "name": site.name})
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/sites",
+        f"Site {name} created",
+    )
+
+
+@router.get("/tenants/{tenant_id}/sites/{site_id}", response_class=HTMLResponse)
+def tenant_site_edit(request: Request, tenant_id: int, site_id: int) -> HTMLResponse:
+    user = require_tenant_role(request, tenant_id, UserRole.read_write)
+    if not isinstance(user, User):
+        return user
+
+    def fetch() -> Iterable[Site]:
+        with get_session() as session:
+            return (
+                session.query(Site)
+                .filter(Site.id == site_id, Site.tenant_id == tenant_id)
+                .all()
+            )
+
+    sites, error = _safe_query(fetch)
+    site = sites[0] if sites else None
+    if _wants_json(request):
+        if not site:
+            return JSONResponse({"error": "Site not found"}, status_code=404)
+        return JSONResponse(
+            {
+                "tenant_id": tenant_id,
+                "site": {
+                    "id": site.id,
+                    "name": site.name,
+                    "code": site.code,
+                    "description": site.description,
+                    "created_at": _format_dt(site.created_at),
+                },
+                "error": error,
+            }
+        )
+    return templates.TemplateResponse(
+        "tenant_site_edit.html",
+        {
+            "request": request,
+            "site": site,
+            "tenant_id": tenant_id,
+            "error": error,
+            "user": user,
+        },
+    )
+
+
+@router.post("/tenants/{tenant_id}/sites/{site_id}", response_model=None)
+async def tenant_site_update(
+    request: Request,
+    tenant_id: int,
+    site_id: int,
+    name: str | None = Form(None),
+    code: str | None = Form(None),
+    description: str | None = Form(None),
+):
+    user = require_tenant_role(request, tenant_id, UserRole.read_write)
+    if not isinstance(user, User):
+        return user
+    wants_json = "application/json" in request.headers.get("accept", "")
+    if not name:
+        try:
+            payload = await request.json()
+            name = payload.get("name") if payload else None
+            code = payload.get("code") if payload else code
+            description = payload.get("description") if payload else description
+        except Exception:
+            name = None
+    if not name:
+        if wants_json:
+            return JSONResponse({"error": "Name is required"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/sites",
+            "Name is required",
+        )
+    with get_session() as session:
+        site = (
+            session.query(Site)
+            .filter(Site.id == site_id, Site.tenant_id == tenant_id)
+            .one_or_none()
+        )
+        if not site:
+            if wants_json:
+                return JSONResponse({"error": "Site not found"}, status_code=404)
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/sites",
+                "Site not found",
+            )
+        site.name = name.strip()
+        site.code = (code or "").strip() or None
+        site.description = (description or "").strip() or None
+        log_audit(
+            actor_user_id=user.id,
+            action="tenant.site.update",
+            entity_type="site",
+            entity_id=site.id,
+            details={"name": site.name},
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse({"status": "updated", "site_id": site.id, "name": site.name})
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/sites",
+        f"Site {name} updated",
+    )
+
+
+@router.post("/tenants/{tenant_id}/sites/{site_id}/delete", response_model=None)
+def tenant_site_delete(
+    request: Request,
+    tenant_id: int,
+    site_id: int,
+    confirm_name: str = Form(...),
+):
+    user = require_tenant_role(request, tenant_id, UserRole.read_write)
+    if not isinstance(user, User):
+        return user
+    wants_json = "application/json" in request.headers.get("accept", "")
+    with get_session() as session:
+        site = (
+            session.query(Site)
+            .filter(Site.id == site_id, Site.tenant_id == tenant_id)
+            .one_or_none()
+        )
+        if not site:
+            if wants_json:
+                return JSONResponse({"error": "Site not found"}, status_code=404)
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/sites",
+                "Site not found",
+            )
+        if confirm_name.strip() != site.name:
+            if wants_json:
+                return JSONResponse(
+                    {"error": "Site name confirmation does not match"},
+                    status_code=400,
+                )
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/sites",
+                "Site name confirmation does not match",
+            )
+        network_count = (
+            session.query(Network).filter(Network.site_id == site_id).count()
+        )
+        if network_count:
+            if wants_json:
+                return JSONResponse(
+                    {"error": "Delete blocked: site has networks"},
+                    status_code=409,
+                )
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/sites",
+                "Delete blocked: site has networks",
+            )
+        session.delete(site)
+        log_audit(
+            actor_user_id=user.id,
+            action="tenant.site.delete",
+            entity_type="site",
+            entity_id=site_id,
+            details={"name": site.name},
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse({"status": "deleted", "site_id": site_id})
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/sites",
+        "Site deleted",
+    )
+
+
+@router.get("/tenants/{tenant_id}/networks", response_class=HTMLResponse)
+def tenant_networks(request: Request, tenant_id: int) -> HTMLResponse:
+    user = require_tenant_role(request, tenant_id, UserRole.read_only)
+    if not isinstance(user, User):
+        return user
+
+    def fetch() -> Iterable[Network]:
+        with get_session() as session:
+            query = session.query(Network).filter(Network.tenant_id == tenant_id)
+            name_filter = request.query_params.get("name")
+            cidr_filter = request.query_params.get("cidr")
+            site_filter = request.query_params.get("site_id")
+            if name_filter:
+                query = query.filter(Network.name.ilike(f"%{name_filter}%"))
+            if cidr_filter:
+                query = query.filter(Network.cidr.ilike(f"%{cidr_filter}%"))
+            if site_filter:
+                try:
+                    query = query.filter(Network.site_id == int(site_filter))
+                except ValueError:
+                    pass
+            query = query.order_by(Network.name)
+            query, _, _ = _paginate_query(query, request)
+            return query.all()
+
+    def fetch_sites() -> Iterable[Site]:
+        with get_session() as session:
+            return (
+                session.query(Site)
+                .filter(Site.tenant_id == tenant_id)
+                .order_by(Site.name)
+                .all()
+            )
+
+    networks, error = _safe_query(fetch)
+    sites, _ = _safe_query(fetch_sites)
+    site_map = {site.id: site.name for site in sites}
+    if _wants_json(request):
+        limit, offset = _pagination_params(request)
+        return JSONResponse(
+            {
+                "tenant_id": tenant_id,
+                "networks": [
+                    {
+                        "id": network.id,
+                        "name": network.name,
+                        "cidr": network.cidr,
+                        "site_id": network.site_id,
+                        "site_name": site_map.get(network.site_id),
+                        "description": network.description,
+                        "created_at": _format_dt(network.created_at),
+                    }
+                    for network in networks
+                ],
+                "sites": [
+                    {"id": site.id, "name": site.name} for site in sites
+                ],
+                "error": error,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+    return templates.TemplateResponse(
+        "tenant_networks.html",
+        {
+            "request": request,
+            "networks": networks,
+            "sites": sites,
+            "site_map": site_map,
+            "tenant_id": tenant_id,
+            "error": error,
+            "user": user,
+            "message": request.query_params.get("message"),
+        },
+    )
+
+
+@router.post("/tenants/{tenant_id}/networks", response_model=None)
+async def tenant_network_create(
+    request: Request,
+    tenant_id: int,
+    name: str | None = Form(None),
+    cidr: str | None = Form(None),
+    site_id: str | None = Form(None),
+    description: str | None = Form(None),
+):
+    user = require_tenant_role(request, tenant_id, UserRole.read_write)
+    if not isinstance(user, User):
+        return user
+    wants_json = "application/json" in request.headers.get("accept", "")
+    if not name or not cidr:
+        try:
+            payload = await request.json()
+            name = payload.get("name") if payload else name
+            cidr = payload.get("cidr") if payload else cidr
+            site_id = str(payload.get("site_id")) if payload and payload.get("site_id") is not None else site_id
+            description = payload.get("description") if payload else description
+        except Exception:
+            name = name
+    if not name or not cidr:
+        if wants_json:
+            return JSONResponse({"error": "Name and CIDR are required"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/networks",
+            "Name and CIDR are required",
+        )
+    parsed_site_id = int(site_id) if site_id else None
+    with get_session() as session:
+        network = Network(
+            tenant_id=tenant_id,
+            site_id=parsed_site_id,
+            name=name.strip(),
+            cidr=cidr.strip(),
+            description=(description or "").strip() or None,
+        )
+        session.add(network)
+        session.flush()
+        log_audit(
+            actor_user_id=user.id,
+            action="tenant.network.create",
+            entity_type="network",
+            entity_id=network.id,
+            details={"name": network.name, "cidr": network.cidr},
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse(
+            {
+                "status": "created",
+                "network_id": network.id,
+                "name": network.name,
+            }
+        )
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/networks",
+        f"Network {name} created",
+    )
+
+
+@router.get("/tenants/{tenant_id}/networks/{network_id}", response_class=HTMLResponse)
+def tenant_network_edit(
+    request: Request, tenant_id: int, network_id: int
+) -> HTMLResponse:
+    user = require_tenant_role(request, tenant_id, UserRole.read_write)
+    if not isinstance(user, User):
+        return user
+
+    def fetch() -> Iterable[Network]:
+        with get_session() as session:
+            return (
+                session.query(Network)
+                .filter(Network.id == network_id, Network.tenant_id == tenant_id)
+                .all()
+            )
+
+    def fetch_sites() -> Iterable[Site]:
+        with get_session() as session:
+            return (
+                session.query(Site)
+                .filter(Site.tenant_id == tenant_id)
+                .order_by(Site.name)
+                .all()
+            )
+
+    networks, error = _safe_query(fetch)
+    sites, _ = _safe_query(fetch_sites)
+    network = networks[0] if networks else None
+    if _wants_json(request):
+        if not network:
+            return JSONResponse({"error": "Network not found"}, status_code=404)
+        return JSONResponse(
+            {
+                "tenant_id": tenant_id,
+                "network": {
+                    "id": network.id,
+                    "name": network.name,
+                    "cidr": network.cidr,
+                    "site_id": network.site_id,
+                    "description": network.description,
+                    "created_at": _format_dt(network.created_at),
+                },
+                "sites": [{"id": site.id, "name": site.name} for site in sites],
+                "error": error,
+            }
+        )
+    return templates.TemplateResponse(
+        "tenant_network_edit.html",
+        {
+            "request": request,
+            "network": network,
+            "sites": sites,
+            "tenant_id": tenant_id,
+            "error": error,
+            "user": user,
+        },
+    )
+
+
+@router.post("/tenants/{tenant_id}/networks/{network_id}", response_model=None)
+async def tenant_network_update(
+    request: Request,
+    tenant_id: int,
+    network_id: int,
+    name: str | None = Form(None),
+    cidr: str | None = Form(None),
+    site_id: str | None = Form(None),
+    description: str | None = Form(None),
+):
+    user = require_tenant_role(request, tenant_id, UserRole.read_write)
+    if not isinstance(user, User):
+        return user
+    wants_json = "application/json" in request.headers.get("accept", "")
+    if not name or not cidr:
+        try:
+            payload = await request.json()
+            name = payload.get("name") if payload else name
+            cidr = payload.get("cidr") if payload else cidr
+            site_id = str(payload.get("site_id")) if payload and payload.get("site_id") is not None else site_id
+            description = payload.get("description") if payload else description
+        except Exception:
+            name = name
+    if not name or not cidr:
+        if wants_json:
+            return JSONResponse({"error": "Name and CIDR are required"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/networks",
+            "Name and CIDR are required",
+        )
+    parsed_site_id = int(site_id) if site_id else None
+    with get_session() as session:
+        network = (
+            session.query(Network)
+            .filter(Network.id == network_id, Network.tenant_id == tenant_id)
+            .one_or_none()
+        )
+        if not network:
+            if wants_json:
+                return JSONResponse({"error": "Network not found"}, status_code=404)
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/networks",
+                "Network not found",
+            )
+        network.name = name.strip()
+        network.cidr = cidr.strip()
+        network.site_id = parsed_site_id
+        network.description = (description or "").strip() or None
+        log_audit(
+            actor_user_id=user.id,
+            action="tenant.network.update",
+            entity_type="network",
+            entity_id=network.id,
+            details={"name": network.name, "cidr": network.cidr},
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse(
+            {
+                "status": "updated",
+                "network_id": network.id,
+                "name": network.name,
+            }
+        )
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/networks",
+        f"Network {name} updated",
+    )
+
+
+@router.post("/tenants/{tenant_id}/networks/{network_id}/delete", response_model=None)
+def tenant_network_delete(
+    request: Request,
+    tenant_id: int,
+    network_id: int,
+    confirm_name: str = Form(...),
+):
+    user = require_tenant_role(request, tenant_id, UserRole.read_write)
+    if not isinstance(user, User):
+        return user
+    wants_json = "application/json" in request.headers.get("accept", "")
+    with get_session() as session:
+        network = (
+            session.query(Network)
+            .filter(Network.id == network_id, Network.tenant_id == tenant_id)
+            .one_or_none()
+        )
+        if not network:
+            if wants_json:
+                return JSONResponse({"error": "Network not found"}, status_code=404)
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/networks",
+                "Network not found",
+            )
+        if confirm_name.strip() != network.name:
+            if wants_json:
+                return JSONResponse(
+                    {"error": "Network name confirmation does not match"},
+                    status_code=400,
+                )
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/networks",
+                "Network name confirmation does not match",
+            )
+        session.delete(network)
+        log_audit(
+            actor_user_id=user.id,
+            action="tenant.network.delete",
+            entity_type="network",
+            entity_id=network_id,
+            details={"name": network.name, "cidr": network.cidr},
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse({"status": "deleted", "network_id": network_id})
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/networks",
+        "Network deleted",
+    )
+
+
+@router.get("/tenants/{tenant_id}/scan-results", response_class=HTMLResponse)
+def tenant_scan_results(request: Request, tenant_id: int) -> HTMLResponse:
+    user = require_tenant_role(request, tenant_id, UserRole.read_only)
+    if not isinstance(user, User):
+        return user
+
+    def fetch() -> Iterable[ScanResult]:
+        with get_session() as session:
+            query = session.query(ScanResult).filter(ScanResult.tenant_id == tenant_id)
+            label_filter = request.query_params.get("label")
+            scan_job_filter = request.query_params.get("scan_job_id")
+            if label_filter:
+                query = query.filter(ScanResult.label.ilike(f"%{label_filter}%"))
+            if scan_job_filter:
+                try:
+                    query = query.filter(ScanResult.scan_job_id == int(scan_job_filter))
+                except ValueError:
+                    pass
+            query = query.order_by(ScanResult.created_at.desc())
+            query, _, _ = _paginate_query(query, request)
+            return query.all()
+
+    results, error = _safe_query(fetch)
+    if _wants_json(request):
+        limit, offset = _pagination_params(request)
+        return JSONResponse(
+            {
+                "tenant_id": tenant_id,
+                "scan_results": [
+                    {
+                        "id": result.id,
+                        "label": result.label,
+                        "created_at": _format_dt(result.created_at),
+                        "scan_job_id": result.scan_job_id,
+                    }
+                    for result in results
+                ],
+                "error": error,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+    return templates.TemplateResponse(
+        "tenant_scan_results.html",
+        {
+            "request": request,
+            "results": results,
+            "tenant_id": tenant_id,
+            "error": error,
+            "user": user,
+            "message": request.query_params.get("message"),
+        },
+    )
+
+
+@router.post("/tenants/{tenant_id}/scan-results", response_model=None)
+async def tenant_scan_result_create(
+    request: Request,
+    tenant_id: int,
+    label: str | None = Form(None),
+):
+    user = require_tenant_role(request, tenant_id, UserRole.read_write)
+    if not isinstance(user, User):
+        return user
+    wants_json = "application/json" in request.headers.get("accept", "")
+    if not label:
+        try:
+            payload = await request.json()
+            label = payload.get("label") if payload else None
+        except Exception:
+            label = None
+    if not label:
+        if wants_json:
+            return JSONResponse({"error": "Label is required"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/scan-results",
+            "Label is required",
+        )
+    with get_session() as session:
+        result = ScanResult(tenant_id=tenant_id, label=label.strip())
+        session.add(result)
+        session.flush()
+        log_audit(
+            actor_user_id=user.id,
+            action="tenant.scan_result.create",
+            entity_type="scan_result",
+            entity_id=result.id,
+            details={"label": result.label},
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse(
+            {"status": "created", "scan_result_id": result.id, "label": result.label}
+        )
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/scan-results",
+        f"Scan result {label} created",
+    )
+
+
+@router.post("/tenants/{tenant_id}/scan-results/{result_id}/versions", response_model=None)
+async def tenant_scan_result_add_version(
+    request: Request,
+    tenant_id: int,
+    result_id: int,
+    version: int | None = Form(None),
+    payload: str | None = Form(None),
+):
+    user = require_tenant_role(request, tenant_id, UserRole.read_write)
+    if not isinstance(user, User):
+        return user
+    wants_json = "application/json" in request.headers.get("accept", "")
+    if version is None:
+        try:
+            payload_json = await request.json()
+            version = payload_json.get("version") if payload_json else None
+            payload = payload_json.get("payload") if payload_json else payload
+        except Exception:
+            version = None
+    if version is None:
+        if wants_json:
+            return JSONResponse({"error": "Version is required"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/scan-results",
+            "Version is required",
+        )
+    with get_session() as session:
+        result = (
+            session.query(ScanResult)
+            .filter(ScanResult.id == result_id, ScanResult.tenant_id == tenant_id)
+            .one_or_none()
+        )
+        if not result:
+            if wants_json:
+                return JSONResponse({"error": "Scan result not found"}, status_code=404)
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/scan-results",
+                "Scan result not found",
+            )
+        entry = ScanResultVersion(
+            scan_result_id=result_id,
+            version=version,
+            payload=(payload or "").strip() or None,
+        )
+        session.add(entry)
+        session.flush()
+        log_audit(
+            actor_user_id=user.id,
+            action="tenant.scan_result.version.create",
+            entity_type="scan_result_version",
+            entity_id=entry.id,
+            details={"result_id": result_id, "version": version},
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse(
+            {
+                "status": "created",
+                "scan_result_version_id": entry.id,
+                "result_id": result_id,
+                "version": version,
+            }
+        )
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/scan-results",
+        "Scan result version added",
+    )
+@router.post("/tenants/{tenant_id}/users", response_model=None)
+async def tenant_user_add(
+    request: Request,
+    tenant_id: int,
+    email: str | None = Form(None),
     full_name: str | None = Form(None),
     password: str | None = Form(None),
     roles: list[str] = Form(None),
@@ -149,7 +1007,26 @@ def tenant_user_add(
     if not isinstance(user, User):
         return user
 
+    wants_json = "application/json" in request.headers.get("accept", "")
+    if not email:
+        try:
+            payload = await request.json()
+            email = payload.get("email") if payload else None
+            full_name = payload.get("full_name") if payload else full_name
+            password = payload.get("password") if payload else password
+            roles = payload.get("roles") if payload else roles
+        except Exception:
+            email = None
+    if not email:
+        if wants_json:
+            return JSONResponse({"error": "Email is required"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/users",
+            "Email is required",
+        )
     if not roles:
+        if wants_json:
+            return JSONResponse({"error": "Select at least one role"}, status_code=400)
         return _redirect_with_message(
             f"/tenants/{tenant_id}/users",
             "Select at least one role",
@@ -162,6 +1039,8 @@ def tenant_user_add(
         except ValueError:
             continue
     if not role_set:
+        if wants_json:
+            return JSONResponse({"error": "Invalid role selection"}, status_code=400)
         return _redirect_with_message(
             f"/tenants/{tenant_id}/users",
             "Invalid role selection",
@@ -171,6 +1050,10 @@ def tenant_user_add(
         account = session.query(User).filter(User.email == email).one_or_none()
         if not account:
             if not password and not oidc_enabled():
+                if wants_json:
+                    return JSONResponse(
+                        {"error": "Password required for new users"}, status_code=400
+                    )
                 return _redirect_with_message(
                     f"/tenants/{tenant_id}/users",
                     "Password required for new users",
@@ -208,6 +1091,14 @@ def tenant_user_add(
             details={"user": account.email, "roles": sorted([r.value for r in role_set])},
             session=session,
         )
+    if wants_json:
+        return JSONResponse(
+            {
+                "status": "updated",
+                "email": account.email,
+                "roles": sorted([r.value for r in role_set]),
+            }
+        )
     return _redirect_with_message(
         f"/tenants/{tenant_id}/users",
         f"User {email} added or updated",
@@ -215,14 +1106,23 @@ def tenant_user_add(
 
 
 @router.post("/tenants/{tenant_id}/users/{membership_id}/role", response_model=None)
-def tenant_user_update_role(
+async def tenant_user_update_role(
     request: Request, tenant_id: int, membership_id: int, roles: list[str] = Form(None)
 ):
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
 
+    wants_json = "application/json" in request.headers.get("accept", "")
     if not roles:
+        try:
+            payload = await request.json()
+            roles = payload.get("roles") if payload else roles
+        except Exception:
+            roles = None
+    if not roles:
+        if wants_json:
+            return JSONResponse({"error": "Select at least one role"}, status_code=400)
         return _redirect_with_message(
             f"/tenants/{tenant_id}/users",
             "Select at least one role",
@@ -235,6 +1135,8 @@ def tenant_user_update_role(
         except ValueError:
             continue
     if not role_set:
+        if wants_json:
+            return JSONResponse({"error": "Invalid role selection"}, status_code=400)
         return _redirect_with_message(
             f"/tenants/{tenant_id}/users",
             "Invalid role selection",
@@ -247,6 +1149,8 @@ def tenant_user_update_role(
             .one_or_none()
         )
         if not membership:
+            if wants_json:
+                return JSONResponse({"error": "Membership not found"}, status_code=404)
             return _redirect_with_message(
                 f"/tenants/{tenant_id}/users",
                 "Membership not found",
@@ -262,6 +1166,14 @@ def tenant_user_update_role(
             details={"roles": sorted([r.value for r in role_set])},
             session=session,
         )
+    if wants_json:
+        return JSONResponse(
+            {
+                "status": "updated",
+                "membership_id": membership_id,
+                "roles": sorted([r.value for r in role_set]),
+            }
+        )
     return _redirect_with_message(
         f"/tenants/{tenant_id}/users",
         "Role updated",
@@ -276,6 +1188,7 @@ def tenant_user_delete(
     if not isinstance(user, User):
         return user
 
+    wants_json = "application/json" in request.headers.get("accept", "")
     with get_session() as session:
         membership = (
             session.query(TenantUser)
@@ -283,6 +1196,8 @@ def tenant_user_delete(
             .one_or_none()
         )
         if not membership:
+            if wants_json:
+                return JSONResponse({"error": "Membership not found"}, status_code=404)
             return _redirect_with_message(
                 f"/tenants/{tenant_id}/users",
                 "Membership not found",
@@ -296,6 +1211,8 @@ def tenant_user_delete(
             details={"user_id": membership.user_id},
             session=session,
         )
+    if wants_json:
+        return JSONResponse({"status": "deleted", "membership_id": membership_id})
     return _redirect_with_message(
         f"/tenants/{tenant_id}/users",
         "User removed from tenant",
@@ -303,8 +1220,8 @@ def tenant_user_delete(
 
 
 @router.post("/tenants/{tenant_id}/users/{membership_id}/password", response_model=None)
-def tenant_user_reset_password(
-    request: Request, tenant_id: int, membership_id: int, password: str = Form(...)
+async def tenant_user_reset_password(
+    request: Request, tenant_id: int, membership_id: int, password: str | None = Form(None)
 ):
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
@@ -314,7 +1231,16 @@ def tenant_user_reset_password(
             f"/tenants/{tenant_id}/users",
             "Password resets are disabled when OIDC is enabled",
         )
-    if not password.strip():
+    wants_json = "application/json" in request.headers.get("accept", "")
+    if not password:
+        try:
+            payload = await request.json()
+            password = payload.get("password") if payload else None
+        except Exception:
+            password = None
+    if not password or not password.strip():
+        if wants_json:
+            return JSONResponse({"error": "Password cannot be empty"}, status_code=400)
         return _redirect_with_message(
             f"/tenants/{tenant_id}/users",
             "Password cannot be empty",
@@ -327,6 +1253,8 @@ def tenant_user_reset_password(
             .one_or_none()
         )
         if not membership:
+            if wants_json:
+                return JSONResponse({"error": "Membership not found"}, status_code=404)
             return _redirect_with_message(
                 f"/tenants/{tenant_id}/users",
                 "Membership not found",
@@ -340,6 +1268,8 @@ def tenant_user_reset_password(
             details={"user": membership.user.email},
             session=session,
         )
+    if wants_json:
+        return JSONResponse({"status": "updated", "membership_id": membership_id})
     return _redirect_with_message(
         f"/tenants/{tenant_id}/users",
         "Password reset",
@@ -380,9 +1310,35 @@ def admin_tenants(request: Request) -> HTMLResponse:
 
     def fetch() -> Iterable[Tenant]:
         with get_session() as session:
-            return session.query(Tenant).order_by(Tenant.name).all()
+            query = session.query(Tenant)
+            name_filter = request.query_params.get("name")
+            if name_filter:
+                query = query.filter(Tenant.name.ilike(f"%{name_filter}%"))
+            query = query.order_by(Tenant.name)
+            query, _, _ = _paginate_query(query, request)
+            return query.all()
 
     tenants, error = _safe_query(fetch)
+    if _wants_json(request):
+        limit, offset = _pagination_params(request)
+        return JSONResponse(
+            {
+                "tenants": [
+                    {
+                        "id": tenant.id,
+                        "name": tenant.name,
+                        "description": tenant.description,
+                        "default_scanner": tenant.default_scanner,
+                        "default_scan_interval_minutes": tenant.default_scan_interval_minutes,
+                        "created_at": _format_dt(tenant.created_at),
+                    }
+                    for tenant in tenants
+                ],
+                "error": error,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
     return templates.TemplateResponse(
         "admin_tenants.html",
         {
@@ -396,9 +1352,9 @@ def admin_tenants(request: Request) -> HTMLResponse:
 
 
 @router.post("/admin/tenants", response_model=None)
-def admin_tenant_create(
+async def admin_tenant_create(
     request: Request,
-    name: str = Form(...),
+    name: str | None = Form(None),
     description: str | None = Form(None),
     default_scanner: str | None = Form(None),
     default_scan_interval_minutes: str | None = Form(None),
@@ -406,6 +1362,24 @@ def admin_tenant_create(
     user = require_superadmin(request)
     if not isinstance(user, User):
         return user
+    wants_json = "application/json" in request.headers.get("accept", "")
+    if not name:
+        try:
+            payload = await request.json()
+            name = payload.get("name") if payload else None
+            description = payload.get("description") if payload else description
+            default_scanner = payload.get("default_scanner") if payload else default_scanner
+            default_scan_interval_minutes = (
+                str(payload.get("default_scan_interval_minutes"))
+                if payload and payload.get("default_scan_interval_minutes") is not None
+                else default_scan_interval_minutes
+            )
+        except Exception:
+            name = None
+    if not name:
+        if wants_json:
+            return JSONResponse({"error": "Name is required"}, status_code=400)
+        return RedirectResponse(url="/admin/tenants?message=Name%20is%20required", status_code=302)
     with get_session() as session:
         interval = int(default_scan_interval_minutes) if default_scan_interval_minutes else None
         tenant = Tenant(
@@ -432,6 +1406,10 @@ def admin_tenant_create(
             details={"name": tenant.name},
             session=session,
         )
+    if wants_json:
+        return JSONResponse(
+            {"status": "created", "tenant_id": tenant.id, "name": tenant.name}
+        )
     return RedirectResponse(url="/admin/tenants", status_code=302)
 
 
@@ -447,6 +1425,22 @@ def admin_tenant_edit(request: Request, tenant_id: int) -> HTMLResponse:
 
     tenants, error = _safe_query(fetch)
     tenant = tenants[0] if tenants else None
+    if _wants_json(request):
+        if not tenant:
+            return JSONResponse({"error": "Tenant not found"}, status_code=404)
+        return JSONResponse(
+            {
+                "tenant": {
+                    "id": tenant.id,
+                    "name": tenant.name,
+                    "description": tenant.description,
+                    "default_scanner": tenant.default_scanner,
+                    "default_scan_interval_minutes": tenant.default_scan_interval_minutes,
+                    "created_at": _format_dt(tenant.created_at),
+                },
+                "error": error,
+            }
+        )
     return templates.TemplateResponse(
         "admin_tenant_edit.html",
         {"request": request, "tenant": tenant, "error": error, "user": user},
@@ -454,10 +1448,10 @@ def admin_tenant_edit(request: Request, tenant_id: int) -> HTMLResponse:
 
 
 @router.post("/admin/tenants/{tenant_id}", response_model=None)
-def admin_tenant_update(
+async def admin_tenant_update(
     request: Request,
     tenant_id: int,
-    name: str = Form(...),
+    name: str | None = Form(None),
     description: str | None = Form(None),
     default_scanner: str | None = Form(None),
     default_scan_interval_minutes: str | None = Form(None),
@@ -465,9 +1459,29 @@ def admin_tenant_update(
     user = require_superadmin(request)
     if not isinstance(user, User):
         return user
+    wants_json = "application/json" in request.headers.get("accept", "")
+    if not name:
+        try:
+            payload = await request.json()
+            name = payload.get("name") if payload else None
+            description = payload.get("description") if payload else description
+            default_scanner = payload.get("default_scanner") if payload else default_scanner
+            default_scan_interval_minutes = (
+                str(payload.get("default_scan_interval_minutes"))
+                if payload and payload.get("default_scan_interval_minutes") is not None
+                else default_scan_interval_minutes
+            )
+        except Exception:
+            name = None
+    if not name:
+        if wants_json:
+            return JSONResponse({"error": "Name is required"}, status_code=400)
+        return RedirectResponse(url="/admin/tenants?message=Name%20is%20required", status_code=302)
     with get_session() as session:
         tenant = session.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
         if not tenant:
+            if wants_json:
+                return JSONResponse({"error": "Tenant not found"}, status_code=404)
             return HTMLResponse(content="Tenant not found", status_code=404)
         tenant.name = name.strip()
         tenant.description = (description or "").strip() or None
@@ -483,18 +1497,45 @@ def admin_tenant_update(
             details={"name": tenant.name},
             session=session,
         )
+    if wants_json:
+        return JSONResponse(
+            {"status": "updated", "tenant_id": tenant.id, "name": tenant.name}
+        )
     return RedirectResponse(url="/admin/tenants", status_code=302)
 
 
 @router.post("/admin/tenants/{tenant_id}/delete", response_model=None)
-def admin_tenant_delete(request: Request, tenant_id: int):
+async def admin_tenant_delete(
+    request: Request,
+    tenant_id: int,
+    confirm_name: str | None = Form(None),
+):
     user = require_superadmin(request)
     if not isinstance(user, User):
         return user
+    if not confirm_name:
+        try:
+            payload = await request.json()
+            confirm_name = (payload or {}).get("confirm_name")
+        except Exception:
+            confirm_name = None
+    wants_json = "application/json" in request.headers.get("accept", "")
     with get_session() as session:
         tenant = session.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
         if not tenant:
+            if wants_json:
+                return JSONResponse({"error": "Tenant not found"}, status_code=404)
             return HTMLResponse(content="Tenant not found", status_code=404)
+        if not confirm_name or confirm_name.strip() != tenant.name:
+            if wants_json:
+                return JSONResponse(
+                    {"error": "Tenant name confirmation does not match"},
+                    status_code=400,
+                )
+            return RedirectResponse(
+                url="/admin/tenants?message=Tenant%20name%20confirmation%20does%20not%20match",
+                status_code=302,
+            )
         membership_count = (
             session.query(TenantUser).filter(TenantUser.tenant_id == tenant_id).count()
         )
@@ -502,6 +1543,11 @@ def admin_tenant_delete(request: Request, tenant_id: int):
             session.query(Collector).filter(Collector.tenant_id == tenant_id).count()
         )
         if membership_count or collector_count:
+            if wants_json:
+                return JSONResponse(
+                    {"error": "Delete blocked: tenant has memberships or collectors"},
+                    status_code=409,
+                )
             return RedirectResponse(
                 url="/admin/tenants?message=Delete%20blocked%3A%20tenant%20has%20memberships%20or%20collectors",
                 status_code=302,
@@ -515,6 +1561,8 @@ def admin_tenant_delete(request: Request, tenant_id: int):
             details={"name": tenant.name},
             session=session,
         )
+    if wants_json:
+        return JSONResponse({"status": "deleted", "tenant_id": tenant_id})
     return RedirectResponse(url="/admin/tenants", status_code=302)
 
 
@@ -523,6 +1571,7 @@ def admin_tenant_add_me(request: Request, tenant_id: int):
     user = require_superadmin(request)
     if not isinstance(user, User):
         return user
+    wants_json = "application/json" in request.headers.get("accept", "")
     with get_session() as session:
         exists = (
             session.query(TenantUser)
@@ -546,6 +1595,10 @@ def admin_tenant_add_me(request: Request, tenant_id: int):
                 details={"user": user.email, "role": UserRole.user_admin.value},
                 session=session,
             )
+    if wants_json:
+        return JSONResponse(
+            {"status": "updated", "tenant_id": tenant_id, "user_id": user.id}
+        )
     return RedirectResponse(url="/admin/tenants", status_code=302)
 
 
@@ -557,9 +1610,37 @@ def admin_users(request: Request) -> HTMLResponse:
 
     def fetch() -> Iterable[User]:
         with get_session() as session:
-            return session.query(User).order_by(User.email).all()
+            query = session.query(User)
+            email_filter = request.query_params.get("email")
+            superadmin_filter = request.query_params.get("superadmin")
+            if email_filter:
+                query = query.filter(User.email.ilike(f"%{email_filter}%"))
+            if superadmin_filter in {"true", "false"}:
+                query = query.filter(User.is_superadmin == (superadmin_filter == "true"))
+            query = query.order_by(User.email)
+            query, _, _ = _paginate_query(query, request)
+            return query.all()
 
     users, error = _safe_query(fetch)
+    if _wants_json(request):
+        limit, offset = _pagination_params(request)
+        return JSONResponse(
+            {
+                "users": [
+                    {
+                        "id": u.id,
+                        "email": u.email,
+                        "full_name": u.full_name,
+                        "is_superadmin": u.is_superadmin,
+                        "created_at": _format_dt(u.created_at),
+                    }
+                    for u in users
+                ],
+                "error": error,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
     return templates.TemplateResponse(
         "admin_users.html",
         {"request": request, "users": users, "error": error, "user": user},
@@ -574,9 +1655,51 @@ def admin_audit(request: Request) -> HTMLResponse:
 
     def fetch() -> Iterable[AuditLog]:
         with get_session() as session:
-            return session.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(100).all()
+            query = session.query(AuditLog)
+            action_filter = request.query_params.get("action")
+            entity_type_filter = request.query_params.get("entity_type")
+            actor_filter = request.query_params.get("actor_user_id")
+            entity_id_filter = request.query_params.get("entity_id")
+            if action_filter:
+                query = query.filter(AuditLog.action.ilike(f"%{action_filter}%"))
+            if entity_type_filter:
+                query = query.filter(AuditLog.entity_type == entity_type_filter)
+            if actor_filter:
+                try:
+                    query = query.filter(AuditLog.actor_user_id == int(actor_filter))
+                except ValueError:
+                    pass
+            if entity_id_filter:
+                try:
+                    query = query.filter(AuditLog.entity_id == int(entity_id_filter))
+                except ValueError:
+                    pass
+            query = query.order_by(AuditLog.created_at.desc())
+            query, _, _ = _paginate_query(query, request)
+            return query.all()
 
     entries, error = _safe_query(fetch)
+    if _wants_json(request):
+        limit, offset = _pagination_params(request)
+        return JSONResponse(
+            {
+                "entries": [
+                    {
+                        "id": entry.id,
+                        "actor_user_id": entry.actor_user_id,
+                        "action": entry.action,
+                        "entity_type": entry.entity_type,
+                        "entity_id": entry.entity_id,
+                        "details": entry.details,
+                        "created_at": _format_dt(entry.created_at),
+                    }
+                    for entry in entries
+                ],
+                "error": error,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
     return templates.TemplateResponse(
         "admin_audit.html",
         {"request": request, "entries": entries, "error": error, "user": user},

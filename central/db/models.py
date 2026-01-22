@@ -70,6 +70,61 @@ class Device(Base):
     scan_job: Mapped[ScanJob] = relationship(back_populates="devices")
 
 
+class Site(Base):
+    __tablename__ = "sites"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    code: Mapped[str] = mapped_column(String(50), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    tenant: Mapped["Tenant"] = relationship()
+    networks: Mapped[list["Network"]] = relationship(back_populates="site")
+
+
+class Network(Base):
+    __tablename__ = "networks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), nullable=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    cidr: Mapped[str] = mapped_column(String(64), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    tenant: Mapped["Tenant"] = relationship()
+    site: Mapped["Site"] = relationship(back_populates="networks")
+
+
+class ScanResult(Base):
+    __tablename__ = "scan_results"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    scan_job_id: Mapped[int] = mapped_column(ForeignKey("scan_jobs.id"), nullable=True)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    versions: Mapped[list["ScanResultVersion"]] = relationship(back_populates="scan_result")
+
+
+class ScanResultVersion(Base):
+    __tablename__ = "scan_result_versions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scan_result_id: Mapped[int] = mapped_column(
+        ForeignKey("scan_results.id"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    scan_result: Mapped["ScanResult"] = relationship(back_populates="versions")
+
+
 class UserRole(str, Enum):
     read_only = "ro"
     read_write = "rw"

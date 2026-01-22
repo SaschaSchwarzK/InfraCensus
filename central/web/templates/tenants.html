@@ -17,7 +17,12 @@
         {% for tenant in tenants %}
           <tr>
             <td>{{ tenant.name }}</td>
-            <td><a href="/tenants/{{ tenant.id }}/users">Manage users</a></td>
+            <td>
+              <a href="/tenants/{{ tenant.id }}/users">Users</a>
+              <a href="/tenants/{{ tenant.id }}/sites">Sites</a>
+              <a href="/tenants/{{ tenant.id }}/networks">Networks</a>
+              <a href="/tenants/{{ tenant.id }}/scan-results">Scan Results</a>
+            </td>
           </tr>
         {% else %}
           <tr>

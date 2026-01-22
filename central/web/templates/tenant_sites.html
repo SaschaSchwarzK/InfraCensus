@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="card">
+    <h2>Tenant {{ tenant_id }} Sites</h2>
+    <p class="meta">
+      <a href="/tenants">Tenants</a> / <a href="/tenants/{{ tenant_id }}/sites">Sites</a>
+    </p>
+    {% if message %}
+      <p class="meta">{{ message }}</p>
+    {% endif %}
+    {% if error %}
+      <p class="meta">{{ error }}</p>
+    {% endif %}
+    <form method="post" action="/tenants/{{ tenant_id }}/sites" style="margin-bottom: 1rem;">
+      <div style="margin-bottom: 0.5rem;">
+        <label for="site-name">Name</label><br />
+        <input id="site-name" name="name" type="text" required style="width: 60%; padding: 0.4rem;" />
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        <label for="site-code">Code</label><br />
+        <input id="site-code" name="code" type="text" style="width: 60%; padding: 0.4rem;" />
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        <label for="site-description">Description</label><br />
+        <textarea id="site-description" name="description" style="width: 60%; padding: 0.4rem;"></textarea>
+      </div>
+      <button type="submit">Add Site</button>
+    </form>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Code</th>
+          <th>Description</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for site in sites %}
+          <tr>
+            <td>{{ site.name }}</td>
+            <td>{{ site.code or "" }}</td>
+            <td class="meta">{{ site.description or "" }}</td>
+            <td>
+              <a href="/tenants/{{ tenant_id }}/sites/{{ site.id }}">Edit</a>
+              <form method="post" action="/tenants/{{ tenant_id }}/sites/{{ site.id }}/delete" style="display: inline;" onsubmit="return this.querySelector('input[name=confirm_name]').value === '{{ site.name }}';">
+                <input name="confirm_name" type="text" placeholder="Type site name to delete" style="padding: 0.2rem; width: 160px;" />
+                <button type="submit">Delete</button>
+              </form>
+            </td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="4" class="meta">No sites yet.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

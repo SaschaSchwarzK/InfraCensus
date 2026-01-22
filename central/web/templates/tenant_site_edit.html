@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="card">
+    <h2>Edit Site</h2>
+    <p class="meta">
+      <a href="/tenants">Tenants</a> / <a href="/tenants/{{ tenant_id }}/sites">Sites</a> / Edit
+    </p>
+    {% if error %}
+      <p class="meta">{{ error }}</p>
+    {% endif %}
+    {% if site %}
+      <form method="post" action="/tenants/{{ tenant_id }}/sites/{{ site.id }}">
+        <div style="margin-bottom: 0.5rem;">
+          <label for="site-name">Name</label><br />
+          <input id="site-name" name="name" type="text" value="{{ site.name }}" required style="width: 60%; padding: 0.4rem;" />
+        </div>
+        <div style="margin-bottom: 0.5rem;">
+          <label for="site-code">Code</label><br />
+          <input id="site-code" name="code" type="text" value="{{ site.code or '' }}" style="width: 60%; padding: 0.4rem;" />
+        </div>
+        <div style="margin-bottom: 0.5rem;">
+          <label for="site-description">Description</label><br />
+          <textarea id="site-description" name="description" style="width: 60%; padding: 0.4rem;">{{ site.description or '' }}</textarea>
+        </div>
+        <button type="submit">Save</button>
+      </form>
+    {% else %}
+      <p class="meta">Site not found.</p>
+    {% endif %}
+    <p style="margin-top: 1rem;"><a href="/tenants/{{ tenant_id }}/sites">Back to sites</a></p>
+  </div>
+{% endblock %}

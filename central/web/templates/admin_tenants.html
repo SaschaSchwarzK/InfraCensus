@@ -43,7 +43,8 @@
               <form method="post" action="/admin/tenants/{{ tenant.id }}/add-me" style="display: inline;">
                 <button type="submit">Add Me</button>
               </form>
-              <form method="post" action="/admin/tenants/{{ tenant.id }}/delete" style="display: inline;" onsubmit="return confirm('Delete tenant {{ tenant.name }}? This cannot be undone.');">
+              <form method="post" action="/admin/tenants/{{ tenant.id }}/delete" style="display: inline;" onsubmit="return this.querySelector('input[name=confirm_name]').value === '{{ tenant.name }}';">
+                <input name="confirm_name" type="text" placeholder="Type tenant name to delete" style="padding: 0.2rem; width: 180px;" />
                 <button type="submit">Delete</button>
               </form>
             </td>

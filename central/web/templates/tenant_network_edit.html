@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="card">
+    <h2>Edit Network</h2>
+    <p class="meta">
+      <a href="/tenants">Tenants</a> / <a href="/tenants/{{ tenant_id }}/networks">Networks</a> / Edit
+    </p>
+    {% if error %}
+      <p class="meta">{{ error }}</p>
+    {% endif %}
+    {% if network %}
+      <form method="post" action="/tenants/{{ tenant_id }}/networks/{{ network.id }}">
+        <div style="margin-bottom: 0.5rem;">
+          <label for="network-name">Name</label><br />
+          <input id="network-name" name="name" type="text" value="{{ network.name }}" required style="width: 60%; padding: 0.4rem;" />
+        </div>
+        <div style="margin-bottom: 0.5rem;">
+          <label for="network-cidr">CIDR</label><br />
+          <input id="network-cidr" name="cidr" type="text" value="{{ network.cidr }}" required style="width: 60%; padding: 0.4rem;" />
+        </div>
+        <div style="margin-bottom: 0.5rem;">
+          <label for="network-site">Site</label><br />
+          <select id="network-site" name="site_id" style="width: 60%; padding: 0.4rem;">
+            <option value="">No site</option>
+            {% for site in sites %}
+              <option value="{{ site.id }}" {% if network.site_id == site.id %}selected{% endif %}>{{ site.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div style="margin-bottom: 0.5rem;">
+          <label for="network-description">Description</label><br />
+          <textarea id="network-description" name="description" style="width: 60%; padding: 0.4rem;">{{ network.description or '' }}</textarea>
+        </div>
+        <button type="submit">Save</button>
+      </form>
+    {% else %}
+      <p class="meta">Network not found.</p>
+    {% endif %}
+    <p style="margin-top: 1rem;"><a href="/tenants/{{ tenant_id }}/networks">Back to networks</a></p>
+  </div>
+{% endblock %}
