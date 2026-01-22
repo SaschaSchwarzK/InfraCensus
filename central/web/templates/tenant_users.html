@@ -2,7 +2,7 @@
 
 {% block content %}
   <div class="card">
-    <h2>Tenant {{ tenant_id }} Users</h2>
+    <h2>Tenant {{ tenant_name or tenant_id }} Users</h2>
     {% if message %}
       <p class="meta">{{ message }}</p>
     {% endif %}
@@ -43,7 +43,7 @@
         {% for membership in memberships %}
           {% set active_roles = membership.roles.split(",") if membership.roles else [membership.role.value] %}
           <tr>
-            <td>{{ membership.user.full_name or "" }}</td>
+            <td>{{ membership.user.full_name or membership.user.email }}</td>
             <td>{{ membership.user.email }}</td>
             <td><span class="tag">{{ active_roles | join(", ") }}</span></td>
             <td>

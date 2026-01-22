@@ -24,8 +24,8 @@
         </tr>
         <tr>
           <td>Database</td>
-          <td><span class="tag">unknown</span></td>
-          <td class="meta">Pending connection checks</td>
+          <td><span class="tag">{{ db_status }}</span></td>
+          <td class="meta">{% if error %}{{ error }}{% else %}Connection OK{% endif %}</td>
         </tr>
       </tbody>
     </table>
@@ -43,18 +43,18 @@
       <tbody>
         <tr>
           <td>Active Tenants</td>
-          <td>0</td>
-          <td class="meta">Placeholder</td>
+          <td>{{ stats.tenants }}</td>
+          <td class="meta">Tenant memberships for this user</td>
         </tr>
         <tr>
           <td>Registered Collectors</td>
-          <td>0</td>
-          <td class="meta">Placeholder</td>
+          <td>{{ stats.collectors }}</td>
+          <td class="meta">Scoped to tenant memberships</td>
         </tr>
         <tr>
           <td>Devices Discovered</td>
-          <td>0</td>
-          <td class="meta">Placeholder</td>
+          <td>{{ stats.devices }}</td>
+          <td class="meta">Scoped to tenant memberships</td>
         </tr>
         <tr>
           <td>Scans in Last 24h</td>

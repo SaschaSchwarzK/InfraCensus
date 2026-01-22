@@ -19,3 +19,4 @@ All GUI GET routes return JSON when `Accept: application/json` is set.
 - `/admin/tenants`: `name`
 - `/admin/users`: `email`, `superadmin` (`true` or `false`)
 - `/admin/audit`: `action`, `entity_type`, `actor_user_id`, `entity_id`
+- `/tenants/{id}/schedules`: `site_id`, `scan_type`, `start_after`, `start_before`

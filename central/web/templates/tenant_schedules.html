@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="card">
+    <h2>Tenant {{ tenant_name or tenant_id }} Schedules</h2>
+    <p class="meta">
+      <a href="/tenants">Tenants</a> / <a href="/tenants/{{ tenant_id }}/schedules">Schedules</a>
+    </p>
+    {% if message %}
+      <p class="meta">{{ message }}</p>
+    {% endif %}
+    {% if error %}
+      <p class="meta">{{ error }}</p>
+    {% endif %}
+    <form method="get" action="/tenants/{{ tenant_id }}/schedules" style="margin-bottom: 1rem;">
+      <label for="site-filter">Filter by site</label><br />
+      <select id="site-filter" name="site_id" style="width: 40%; padding: 0.4rem;">
+        <option value="">All sites</option>
+        {% for site in sites %}
+          <option value="{{ site.id }}" {% if site_filter and site_filter|int == site.id %}selected{% endif %}>{{ site.name }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit">Apply</button>
+    </form>
+    <form method="post" action="/tenants/{{ tenant_id }}/schedules" style="margin-bottom: 1rem;">
+      <div style="margin-bottom: 0.5rem;">
+        <label for="schedule-name">Name</label><br />
+        <input id="schedule-name" name="name" type="text" style="width: 60%; padding: 0.4rem;" />
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        <label for="schedule-date">Start date</label><br />
+        <input id="schedule-date" name="start_date" type="date" required style="width: 40%; padding: 0.4rem;" />
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        <label for="schedule-time">Start time</label><br />
+        <input id="schedule-time" name="start_time" type="time" required style="width: 40%; padding: 0.4rem;" />
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        <label for="schedule-site">Site (optional)</label><br />
+        <select id="schedule-site" name="site_id" style="width: 60%; padding: 0.4rem;">
+          <option value="">No site</option>
+          {% for site in sites %}
+            <option value="{{ site.id }}">{{ site.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        <label>Networks</label><br />
+        {% for network in networks %}
+          <label><input type="checkbox" name="network_ids" value="{{ network.id }}" /> {{ network.name }} ({{ network.cidr }})</label><br />
+        {% else %}
+          <span class="meta">No networks available.</span>
+        {% endfor %}
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        <label>Scan types</label><br />
+        <label><input type="checkbox" name="scan_types" value="network_discovery" /> Network discovery</label><br />
+        <label><input type="checkbox" name="scan_types" value="snmp" /> SNMP</label><br />
+        <label><input type="checkbox" name="scan_types" value="ssh" /> SSH</label><br />
+        <label><input type="checkbox" name="scan_types" value="http" /> HTTP(S)</label><br />
+        <label><input type="checkbox" name="scan_types" value="netconf" /> NETCONF</label>
+      </div>
+      <button type="submit">Schedule Scan</button>
+    </form>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Start</th>
+          <th>Site</th>
+          <th>Networks</th>
+          <th>Scan Types</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for schedule in schedules %}
+          <tr>
+            <td>{{ schedule.name or "" }}</td>
+            <td>{{ schedule.start_at }}</td>
+            <td>{{ site_map.get(schedule.site_id, "") if schedule.site_id else "" }}</td>
+            <td class="meta">
+              {% if schedule.network_ids %}
+                {% set names = [] %}
+                {% for network_id in schedule.network_ids.split(',') %}
+                  {% set network_id = network_id.strip() %}
+                  {% if network_id %}
+                    {% set _ = names.append(network_map.get(network_id|int, network_id)) %}
+                  {% endif %}
+                {% endfor %}
+                {{ names | join(", ") }}
+              {% endif %}
+            </td>
+            <td class="meta">{{ schedule.scan_types or "" }}</td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="5" class="meta">No schedules yet.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

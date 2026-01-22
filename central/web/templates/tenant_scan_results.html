@@ -2,7 +2,7 @@
 
 {% block content %}
   <div class="card">
-    <h2>Tenant {{ tenant_id }} Scan Results</h2>
+    <h2>Tenant {{ tenant_name or tenant_id }} Scan Results</h2>
     {% if message %}
       <p class="meta">{{ message }}</p>
     {% endif %}

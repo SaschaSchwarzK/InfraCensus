@@ -21,7 +21,14 @@
         {% for entry in entries %}
           <tr>
             <td>{{ entry.created_at }}</td>
-            <td>{{ entry.actor_user_id or "system" }}</td>
+            <td>
+              {% set actor = user_map.get(entry.actor_user_id) %}
+              {% if actor %}
+                {{ actor.full_name or actor.email }}
+              {% else %}
+                {{ entry.actor_user_id or "system" }}
+              {% endif %}
+            </td>
             <td>{{ entry.action }}</td>
             <td>{{ entry.entity_type }} {{ entry.entity_id or "" }}</td>
             <td class="meta">{{ entry.details or "" }}</td>

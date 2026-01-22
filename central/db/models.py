@@ -125,6 +125,22 @@ class ScanResultVersion(Base):
     scan_result: Mapped["ScanResult"] = relationship(back_populates="versions")
 
 
+class ScanSchedule(Base):
+    __tablename__ = "scan_schedules"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), nullable=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=True)
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    network_ids: Mapped[str] = mapped_column(Text, nullable=True)
+    scan_types: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    tenant: Mapped["Tenant"] = relationship()
+    site: Mapped["Site"] = relationship()
+
+
 class UserRole(str, Enum):
     read_only = "ro"
     read_write = "rw"
