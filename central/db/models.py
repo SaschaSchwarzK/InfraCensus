@@ -97,6 +97,7 @@ class TenantUser(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     role: Mapped[UserRole] = mapped_column(SqlEnum(UserRole), default=UserRole.read_only)
+    roles: Mapped[str] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     tenant: Mapped[Tenant] = relationship(back_populates="tenant_users")

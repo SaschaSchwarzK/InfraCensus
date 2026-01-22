@@ -40,7 +40,10 @@
             <td>{{ tenant.name }}</td>
             <td>
               <a href="/admin/tenants/{{ tenant.id }}">Edit</a>
-              <form method="post" action="/admin/tenants/{{ tenant.id }}/delete" style="display: inline;">
+              <form method="post" action="/admin/tenants/{{ tenant.id }}/add-me" style="display: inline;">
+                <button type="submit">Add Me</button>
+              </form>
+              <form method="post" action="/admin/tenants/{{ tenant.id }}/delete" style="display: inline;" onsubmit="return confirm('Delete tenant {{ tenant.name }}? This cannot be undone.');">
                 <button type="submit">Delete</button>
               </form>
             </td>

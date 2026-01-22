@@ -9,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import joinedload
 
 from central.core.audit import log_audit
+from central.core.auth import highest_role
 from central.db.models import AuditLog, Collector, Tenant, TenantUser, User
 from central.db.session import get_session
 from central.core.config import settings
@@ -142,15 +143,25 @@ def tenant_user_add(
     email: str = Form(...),
     full_name: str | None = Form(None),
     password: str | None = Form(None),
-    role: str = Form(...),
+    roles: list[str] = Form(None),
 ):
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
 
-    try:
-        selected_role = UserRole(role)
-    except ValueError:
+    if not roles:
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/users",
+            "Select at least one role",
+        )
+
+    role_set = set()
+    for item in roles:
+        try:
+            role_set.add(UserRole(item))
+        except ValueError:
+            continue
+    if not role_set:
         return _redirect_with_message(
             f"/tenants/{tenant_id}/users",
             "Invalid role selection",
@@ -178,17 +189,24 @@ def tenant_user_add(
             .one_or_none()
         )
         if membership:
-            membership.role = selected_role
+            membership.roles = ",".join(sorted({r.value for r in role_set}))
+            membership.role = highest_role(role_set)
         else:
             session.add(
-                TenantUser(tenant_id=tenant_id, user_id=account.id, role=selected_role)
+                TenantUser(
+                    tenant_id=tenant_id,
+                    user_id=account.id,
+                    role=highest_role(role_set),
+                    roles=",".join(sorted({r.value for r in role_set})),
+                )
             )
         log_audit(
             actor_user_id=user.id,
             action="tenant.user.add",
             entity_type="tenant",
             entity_id=tenant_id,
-            details={"user": account.email, "role": selected_role.value},
+            details={"user": account.email, "roles": sorted([r.value for r in role_set])},
+            session=session,
         )
     return _redirect_with_message(
         f"/tenants/{tenant_id}/users",
@@ -198,15 +216,25 @@ def tenant_user_add(
 
 @router.post("/tenants/{tenant_id}/users/{membership_id}/role", response_model=None)
 def tenant_user_update_role(
-    request: Request, tenant_id: int, membership_id: int, role: str = Form(...)
+    request: Request, tenant_id: int, membership_id: int, roles: list[str] = Form(None)
 ):
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
 
-    try:
-        selected_role = UserRole(role)
-    except ValueError:
+    if not roles:
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/users",
+            "Select at least one role",
+        )
+
+    role_set = set()
+    for item in roles:
+        try:
+            role_set.add(UserRole(item))
+        except ValueError:
+            continue
+    if not role_set:
         return _redirect_with_message(
             f"/tenants/{tenant_id}/users",
             "Invalid role selection",
@@ -223,14 +251,16 @@ def tenant_user_update_role(
                 f"/tenants/{tenant_id}/users",
                 "Membership not found",
             )
-        membership.role = selected_role
+        membership.roles = ",".join(sorted({r.value for r in role_set}))
+        membership.role = highest_role(role_set)
         session.flush()
         log_audit(
             actor_user_id=user.id,
             action="tenant.user.role",
             entity_type="tenant_user",
             entity_id=membership_id,
-            details={"role": selected_role.value},
+            details={"roles": sorted([r.value for r in role_set])},
+            session=session,
         )
     return _redirect_with_message(
         f"/tenants/{tenant_id}/users",
@@ -264,6 +294,7 @@ def tenant_user_delete(
             entity_type="tenant_user",
             entity_id=membership_id,
             details={"user_id": membership.user_id},
+            session=session,
         )
     return _redirect_with_message(
         f"/tenants/{tenant_id}/users",
@@ -307,6 +338,7 @@ def tenant_user_reset_password(
             entity_type="tenant_user",
             entity_id=membership_id,
             details={"user": membership.user.email},
+            session=session,
         )
     return _redirect_with_message(
         f"/tenants/{tenant_id}/users",
@@ -384,12 +416,21 @@ def admin_tenant_create(
         )
         session.add(tenant)
         session.flush()
+        session.add(
+            TenantUser(
+                tenant_id=tenant.id,
+                user_id=user.id,
+                role=UserRole.user_admin,
+                roles=UserRole.user_admin.value,
+            )
+        )
         log_audit(
             actor_user_id=user.id,
             action="tenant.create",
             entity_type="tenant",
             entity_id=tenant.id,
             details={"name": tenant.name},
+            session=session,
         )
     return RedirectResponse(url="/admin/tenants", status_code=302)
 
@@ -440,6 +481,7 @@ def admin_tenant_update(
             entity_type="tenant",
             entity_id=tenant.id,
             details={"name": tenant.name},
+            session=session,
         )
     return RedirectResponse(url="/admin/tenants", status_code=302)
 
@@ -471,7 +513,39 @@ def admin_tenant_delete(request: Request, tenant_id: int):
             entity_type="tenant",
             entity_id=tenant_id,
             details={"name": tenant.name},
+            session=session,
         )
+    return RedirectResponse(url="/admin/tenants", status_code=302)
+
+
+@router.post("/admin/tenants/{tenant_id}/add-me", response_model=None)
+def admin_tenant_add_me(request: Request, tenant_id: int):
+    user = require_superadmin(request)
+    if not isinstance(user, User):
+        return user
+    with get_session() as session:
+        exists = (
+            session.query(TenantUser)
+            .filter(TenantUser.tenant_id == tenant_id, TenantUser.user_id == user.id)
+            .one_or_none()
+        )
+        if not exists:
+            session.add(
+                TenantUser(
+                    tenant_id=tenant_id,
+                    user_id=user.id,
+                    role=UserRole.user_admin,
+                    roles=UserRole.user_admin.value,
+                )
+            )
+            log_audit(
+                actor_user_id=user.id,
+                action="tenant.user.add",
+                entity_type="tenant",
+                entity_id=tenant_id,
+                details={"user": user.email, "role": UserRole.user_admin.value},
+                session=session,
+            )
     return RedirectResponse(url="/admin/tenants", status_code=302)
 
 

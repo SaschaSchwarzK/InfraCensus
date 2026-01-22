@@ -23,12 +23,10 @@
         <input id="user-password" name="password" type="password" style="width: 60%; padding: 0.4rem;" />
       </div>
       <div style="margin-bottom: 0.5rem;">
-        <label for="user-role">Role</label><br />
-        <select id="user-role" name="role" style="width: 60%; padding: 0.4rem;">
-          <option value="user_admin">User Admin</option>
-          <option value="rw">Read/Write</option>
-          <option value="ro">Read Only</option>
-        </select>
+        <label>Roles</label><br />
+        <label><input type="checkbox" name="roles" value="user_admin" /> User Admin</label><br />
+        <label><input type="checkbox" name="roles" value="rw" /> Read/Write</label><br />
+        <label><input type="checkbox" name="roles" value="ro" /> Read Only</label>
       </div>
       <button type="submit">Add or Update User</button>
     </form>
@@ -43,17 +41,16 @@
       </thead>
       <tbody>
         {% for membership in memberships %}
+          {% set active_roles = membership.roles.split(",") if membership.roles else [membership.role.value] %}
           <tr>
             <td>{{ membership.user.full_name or "" }}</td>
             <td>{{ membership.user.email }}</td>
-            <td><span class="tag">{{ membership.role.value }}</span></td>
+            <td><span class="tag">{{ active_roles | join(", ") }}</span></td>
             <td>
               <form method="post" action="/tenants/{{ tenant_id }}/users/{{ membership.id }}/role" style="display: inline;">
-                <select name="role" style="padding: 0.2rem;">
-                  <option value="user_admin" {% if membership.role.value == "user_admin" %}selected{% endif %}>User Admin</option>
-                  <option value="rw" {% if membership.role.value == "rw" %}selected{% endif %}>Read/Write</option>
-                  <option value="ro" {% if membership.role.value == "ro" %}selected{% endif %}>Read Only</option>
-                </select>
+                <label><input type="checkbox" name="roles" value="user_admin" {% if "user_admin" in active_roles %}checked{% endif %} /> User Admin</label>
+                <label><input type="checkbox" name="roles" value="rw" {% if "rw" in active_roles %}checked{% endif %} /> Read/Write</label>
+                <label><input type="checkbox" name="roles" value="ro" {% if "ro" in active_roles %}checked{% endif %} /> Read Only</label>
                 <button type="submit">Update</button>
               </form>
               <form method="post" action="/tenants/{{ tenant_id }}/users/{{ membership.id }}/password" style="display: inline;">
