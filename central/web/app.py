@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from typing import Any, Callable, Iterable, Optional, Sequence
+import hashlib
+import secrets
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from urllib.parse import quote_plus
 
 from fastapi import APIRouter, Form, Request
@@ -19,14 +23,17 @@ from central.db.models import (
     ScanResult,
     ScanResultVersion,
     ScanSchedule,
+    ScanScheduleType,
     Site,
     Tenant,
     TenantUser,
     User,
+    CollectorEnrollmentToken,
 )
 from central.db.session import get_session
 from central.core.config import settings
 from central.web.auth import (
+    allow_collector_token,
     authenticate,
     hash_password,
     login_user,
@@ -54,13 +61,31 @@ def _wants_json(request: Request) -> bool:
 
 
 def _format_dt(value: Any) -> str | None:
-    return value.isoformat() if value else None
+    if not value:
+        return None
+    utc_value = value.astimezone(timezone.utc)
+    return utc_value.isoformat().replace("+00:00", "Z")
 
 
 def _parse_csv(value: str | None) -> list[str]:
     if not value:
         return []
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _is_valid_timezone(value: str) -> bool:
+    banned = {"CET", "CEST", "EST", "EDT", "PST", "PDT", "CST", "CDT", "MST", "MDT", "GMT", "UTC"}
+    if value.upper() in banned:
+        return False
+    try:
+        ZoneInfo(value)
+    except ZoneInfoNotFoundError:
+        return False
+    return True
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _pagination_params(request: Request) -> tuple[int, int]:
@@ -344,6 +369,7 @@ def tenant_sites(request: Request, tenant_id: int) -> HTMLResponse:
                     {
                         "id": site.id,
                         "name": site.name,
+                        "timezone": site.timezone,
                         "code": site.code,
                         "description": site.description,
                         "created_at": _format_dt(site.created_at),
@@ -374,6 +400,7 @@ async def tenant_site_create(
     request: Request,
     tenant_id: int,
     name: str | None = Form(None),
+    timezone: str | None = Form(None),
     code: str | None = Form(None),
     description: str | None = Form(None),
 ):
@@ -385,6 +412,7 @@ async def tenant_site_create(
         try:
             payload = await request.json()
             name = payload.get("name") if payload else None
+            timezone = payload.get("timezone") if payload else timezone
             code = payload.get("code") if payload else code
             description = payload.get("description") if payload else description
         except Exception:
@@ -396,10 +424,25 @@ async def tenant_site_create(
             f"/tenants/{tenant_id}/sites",
             "Name is required",
         )
+    if not timezone:
+        if wants_json:
+            return JSONResponse({"error": "Timezone is required"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/sites",
+            "Timezone is required",
+        )
+    if not _is_valid_timezone(timezone):
+        if wants_json:
+            return JSONResponse({"error": "Invalid timezone"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/sites",
+            "Invalid timezone",
+        )
     with get_session() as session:
         site = Site(
             tenant_id=tenant_id,
             name=name.strip(),
+            timezone=timezone.strip(),
             code=(code or "").strip() or None,
             description=(description or "").strip() or None,
         )
@@ -452,6 +495,7 @@ def tenant_site_edit(request: Request, tenant_id: int, site_id: int) -> HTMLResp
                 "site": {
                     "id": site.id,
                     "name": site.name,
+                    "timezone": site.timezone,
                     "code": site.code,
                     "description": site.description,
                     "created_at": _format_dt(site.created_at),
@@ -478,6 +522,7 @@ async def tenant_site_update(
     tenant_id: int,
     site_id: int,
     name: str | None = Form(None),
+    timezone: str | None = Form(None),
     code: str | None = Form(None),
     description: str | None = Form(None),
 ):
@@ -489,6 +534,7 @@ async def tenant_site_update(
         try:
             payload = await request.json()
             name = payload.get("name") if payload else None
+            timezone = payload.get("timezone") if payload else timezone
             code = payload.get("code") if payload else code
             description = payload.get("description") if payload else description
         except Exception:
@@ -499,6 +545,20 @@ async def tenant_site_update(
         return _redirect_with_message(
             f"/tenants/{tenant_id}/sites",
             "Name is required",
+        )
+    if not timezone:
+        if wants_json:
+            return JSONResponse({"error": "Timezone is required"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/sites",
+            "Timezone is required",
+        )
+    if not _is_valid_timezone(timezone):
+        if wants_json:
+            return JSONResponse({"error": "Invalid timezone"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/sites",
+            "Invalid timezone",
         )
     with get_session() as session:
         site = (
@@ -514,6 +574,7 @@ async def tenant_site_update(
                 "Site not found",
             )
         site.name = name.strip()
+        site.timezone = timezone.strip()
         site.code = (code or "").strip() or None
         site.description = (description or "").strip() or None
         log_audit(
@@ -1013,10 +1074,10 @@ def tenant_schedules(request: Request, tenant_id: int) -> HTMLResponse:
             if scan_type_filter:
                 query = query.filter(ScanSchedule.scan_types.ilike(f"%{scan_type_filter}%"))
             if start_after:
-                query = query.filter(ScanSchedule.start_at >= start_after)
+                query = query.filter(ScanSchedule.scheduled_at_utc >= start_after)
             if start_before:
-                query = query.filter(ScanSchedule.start_at <= start_before)
-            query = query.order_by(ScanSchedule.start_at.asc())
+                query = query.filter(ScanSchedule.scheduled_at_utc <= start_before)
+            query = query.order_by(ScanSchedule.scheduled_at_utc.asc())
             query, _, _ = _paginate_query(query, request)
             return query.all()
 
@@ -1050,6 +1111,7 @@ def tenant_schedules(request: Request, tenant_id: int) -> HTMLResponse:
     tenants, _ = _safe_query(fetch_tenant)
     tenant = tenants[0] if tenants else None
     site_map = {site.id: site.name for site in sites}
+    site_tz_map = {site.id: site.timezone for site in sites}
     network_map = {network.id: network.name for network in networks}
     if _wants_json(request):
         limit, offset = _pagination_params(request)
@@ -1061,12 +1123,17 @@ def tenant_schedules(request: Request, tenant_id: int) -> HTMLResponse:
                     {
                         "id": schedule.id,
                         "name": schedule.name,
-                        "start_at": _format_dt(schedule.start_at),
+                        "scheduled_at_utc": _format_dt(schedule.scheduled_at_utc),
+                        "not_before_utc": _format_dt(schedule.not_before_utc),
+                        "not_after_utc": _format_dt(schedule.not_after_utc),
+                        "actual_start_at_utc": _format_dt(schedule.actual_start_at_utc),
+                        "finished_at_utc": _format_dt(schedule.finished_at_utc),
                         "site_id": schedule.site_id,
                         "site_name": site_map.get(schedule.site_id),
+                        "site_timezone": site_tz_map.get(schedule.site_id),
                         "network_ids": _parse_csv(schedule.network_ids),
                         "scan_types": _parse_csv(schedule.scan_types),
-                        "created_at": _format_dt(schedule.created_at),
+                        "created_at_utc": _format_dt(schedule.created_at),
                     }
                     for schedule in schedules
                 ],
@@ -1094,8 +1161,406 @@ def tenant_schedules(request: Request, tenant_id: int) -> HTMLResponse:
             "message": request.query_params.get("message"),
             "site_filter": request.query_params.get("site_id"),
             "site_map": site_map,
+            "site_tz_map": site_tz_map,
             "network_map": network_map,
         },
+    )
+
+
+@router.get("/tenants/{tenant_id}/collectors/enrollment", response_class=HTMLResponse)
+def tenant_collector_enrollment(request: Request, tenant_id: int) -> HTMLResponse:
+    user = require_tenant_role(request, tenant_id, UserRole.user_admin)
+    if not isinstance(user, User):
+        return user
+
+    def fetch_tokens() -> Iterable[CollectorEnrollmentToken]:
+        with get_session() as session:
+            query = session.query(CollectorEnrollmentToken).filter(
+                CollectorEnrollmentToken.tenant_id == tenant_id
+            )
+            site_filter = request.query_params.get("site_id")
+            used_filter = request.query_params.get("used")
+            if site_filter:
+                try:
+                    query = query.filter(CollectorEnrollmentToken.site_id == int(site_filter))
+                except ValueError:
+                    pass
+            if used_filter in {"true", "false"}:
+                if used_filter == "true":
+                    query = query.filter(CollectorEnrollmentToken.used_at.isnot(None))
+                else:
+                    query = query.filter(CollectorEnrollmentToken.used_at.is_(None))
+            query = query.order_by(CollectorEnrollmentToken.created_at.desc())
+            query, _, _ = _paginate_query(query, request)
+            return query.all()
+
+    def fetch_sites() -> Iterable[Site]:
+        with get_session() as session:
+            return (
+                session.query(Site)
+                .filter(Site.tenant_id == tenant_id)
+                .order_by(Site.name)
+                .all()
+            )
+
+    def fetch_users() -> Iterable[User]:
+        with get_session() as session:
+            return session.query(User).all()
+
+    def fetch_tenant() -> Iterable[Tenant]:
+        with get_session() as session:
+            return session.query(Tenant).filter(Tenant.id == tenant_id).all()
+
+    tokens, error = _safe_query(fetch_tokens)
+    sites, _ = _safe_query(fetch_sites)
+    users, _ = _safe_query(fetch_users)
+    tenants, _ = _safe_query(fetch_tenant)
+    tenant = tenants[0] if tenants else None
+    user_map = {u.id: u.email for u in users}
+    site_map = {site.id: site.name for site in sites}
+    site_tz_map = {site.id: site.timezone for site in sites}
+    if _wants_json(request):
+        limit, offset = _pagination_params(request)
+        return JSONResponse(
+            {
+                "tenant_id": tenant_id,
+                "tenant_name": tenant.name if tenant else None,
+                "tokens": [
+                    {
+                        "id": token.id,
+                        "site_id": token.site_id,
+                        "site_name": site_map.get(token.site_id),
+                        "site_timezone": site_tz_map.get(token.site_id),
+                        "expires_at": _format_dt(token.expires_at),
+                        "used_at": _format_dt(token.used_at),
+                        "created_by": user_map.get(token.created_by_user_id),
+                        "created_at_utc": _format_dt(token.created_at),
+                    }
+                    for token in tokens
+                ],
+                "error": error,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+    return templates.TemplateResponse(
+        "tenant_collector_enrollment.html",
+        {
+            "request": request,
+            "tenant_id": tenant_id,
+            "tenant_name": tenant.name if tenant else None,
+            "tokens": tokens,
+            "sites": sites,
+            "user_map": user_map,
+            "site_map": site_map,
+            "site_tz_map": site_tz_map,
+            "error": error,
+            "user": user,
+            "message": request.query_params.get("message"),
+            "issued_token": request.query_params.get("issued_token"),
+        },
+    )
+
+
+@router.post("/tenants/{tenant_id}/collectors/enrollment", response_model=None)
+async def tenant_collector_enrollment_create(
+    request: Request,
+    tenant_id: int,
+    site_id: str | None = Form(None),
+    ttl_minutes: str | None = Form(None),
+):
+    user = require_tenant_role(request, tenant_id, UserRole.user_admin)
+    if not isinstance(user, User):
+        return user
+    wants_json = _wants_json(request)
+    if ttl_minutes is None:
+        try:
+            payload = await request.json()
+            site_id = str(payload.get("site_id")) if payload and payload.get("site_id") is not None else site_id
+            ttl_minutes = str(payload.get("ttl_minutes")) if payload and payload.get("ttl_minutes") is not None else ttl_minutes
+        except Exception:
+            ttl_minutes = None
+    try:
+        ttl_value = int(ttl_minutes) if ttl_minutes else 30
+    except ValueError:
+        ttl_value = 30
+    if ttl_value <= 0 or ttl_value > 1440:
+        if wants_json:
+            return JSONResponse({"error": "ttl_minutes must be between 1 and 1440"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/collectors/enrollment",
+            "ttl_minutes must be between 1 and 1440",
+        )
+    token_value = secrets.token_urlsafe(32)
+    token_hash = _hash_token(token_value)
+    parsed_site_id = int(site_id) if site_id else None
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=ttl_value)
+    with get_session() as session:
+        entry = CollectorEnrollmentToken(
+            tenant_id=tenant_id,
+            site_id=parsed_site_id,
+            token_hash=token_hash,
+            expires_at=expires_at,
+            created_by_user_id=user.id,
+        )
+        session.add(entry)
+        session.flush()
+        log_audit(
+            actor_user_id=user.id,
+            action="collector.enrollment.create",
+            entity_type="collector_enrollment_token",
+            entity_id=entry.id,
+            details={"site_id": parsed_site_id, "expires_at": _format_dt(expires_at)},
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse(
+            {
+                "status": "created",
+                "token": token_value,
+                "expires_at": _format_dt(expires_at),
+            }
+        )
+    return RedirectResponse(
+        url=f"/tenants/{tenant_id}/collectors/enrollment?issued_token={token_value}",
+        status_code=302,
+    )
+
+
+@router.get("/tenants/{tenant_id}/collectors", response_class=HTMLResponse)
+def tenant_collectors(request: Request, tenant_id: int) -> HTMLResponse:
+    user = require_tenant_role(request, tenant_id, UserRole.user_admin)
+    if not isinstance(user, User):
+        return user
+
+    def fetch_collectors() -> Iterable[Collector]:
+        with get_session() as session:
+            query = session.query(Collector).filter(Collector.tenant_id == tenant_id)
+            status_filter = request.query_params.get("status")
+            site_filter = request.query_params.get("site_id")
+            if status_filter:
+                query = query.filter(Collector.status == status_filter)
+            if site_filter:
+                try:
+                    query = query.filter(Collector.site_id == int(site_filter))
+                except ValueError:
+                    pass
+            query = query.order_by(Collector.name)
+            query, _, _ = _paginate_query(query, request)
+            return query.all()
+
+    def fetch_sites() -> Iterable[Site]:
+        with get_session() as session:
+            return (
+                session.query(Site)
+                .filter(Site.tenant_id == tenant_id)
+                .order_by(Site.name)
+                .all()
+            )
+
+    def fetch_tenant() -> Iterable[Tenant]:
+        with get_session() as session:
+            return session.query(Tenant).filter(Tenant.id == tenant_id).all()
+
+    collectors, error = _safe_query(fetch_collectors)
+    sites, _ = _safe_query(fetch_sites)
+    tenants, _ = _safe_query(fetch_tenant)
+    tenant = tenants[0] if tenants else None
+    site_map = {site.id: site.name for site in sites}
+    site_tz_map = {site.id: site.timezone for site in sites}
+    site_tz_map = {site.id: site.timezone for site in sites}
+    if _wants_json(request):
+        limit, offset = _pagination_params(request)
+        return JSONResponse(
+            {
+                "tenant_id": tenant_id,
+                "tenant_name": tenant.name if tenant else None,
+                "collectors": [
+                    {
+                        "id": collector.id,
+                        "uuid": collector.uuid,
+                        "name": collector.name,
+                        "status": collector.status,
+                        "site_id": collector.site_id,
+                        "site_name": site_map.get(collector.site_id),
+                        "site_timezone": site_tz_map.get(collector.site_id),
+                        "capabilities": collector.capabilities,
+                        "labels": collector.labels,
+                        "last_seen_utc": _format_dt(collector.last_seen_utc),
+                        "clock_skew_seconds": collector.clock_skew_seconds,
+                        "cert_serial": collector.cert_serial,
+                        "cert_fingerprint": collector.cert_fingerprint,
+                        "cert_valid_to": _format_dt(collector.cert_valid_to),
+                    }
+                    for collector in collectors
+                ],
+                "error": error,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+    return templates.TemplateResponse(
+        "tenant_collectors.html",
+        {
+            "request": request,
+            "tenant_id": tenant_id,
+            "tenant_name": tenant.name if tenant else None,
+            "collectors": collectors,
+            "sites": sites,
+            "site_map": site_map,
+            "site_tz_map": site_tz_map,
+            "error": error,
+            "user": user,
+            "message": request.query_params.get("message"),
+        },
+    )
+
+
+@router.get("/tenants/{tenant_id}/collectors/{collector_id}", response_class=HTMLResponse)
+def tenant_collector_detail(
+    request: Request, tenant_id: int, collector_id: int
+) -> HTMLResponse:
+    user = require_tenant_role(request, tenant_id, UserRole.user_admin)
+    if not isinstance(user, User):
+        return user
+
+    def fetch_collector() -> Iterable[Collector]:
+        with get_session() as session:
+            return (
+                session.query(Collector)
+                .filter(Collector.id == collector_id, Collector.tenant_id == tenant_id)
+                .all()
+            )
+
+    def fetch_sites() -> Iterable[Site]:
+        with get_session() as session:
+            return (
+                session.query(Site)
+                .filter(Site.tenant_id == tenant_id)
+                .order_by(Site.name)
+                .all()
+            )
+
+    def fetch_tenant() -> Iterable[Tenant]:
+        with get_session() as session:
+            return session.query(Tenant).filter(Tenant.id == tenant_id).all()
+
+    collectors, error = _safe_query(fetch_collector)
+    collector = collectors[0] if collectors else None
+    sites, _ = _safe_query(fetch_sites)
+    tenants, _ = _safe_query(fetch_tenant)
+    tenant = tenants[0] if tenants else None
+    site_map = {site.id: site.name for site in sites}
+    site_tz_map = {site.id: site.timezone for site in sites}
+    if _wants_json(request):
+        if not collector:
+            return JSONResponse({"error": "Collector not found"}, status_code=404)
+        return JSONResponse(
+            {
+                "tenant_id": tenant_id,
+                "tenant_name": tenant.name if tenant else None,
+                "collector": {
+                    "id": collector.id,
+                    "uuid": collector.uuid,
+                    "name": collector.name,
+                    "status": collector.status,
+                    "site_id": collector.site_id,
+                    "site_name": site_map.get(collector.site_id),
+                    "site_timezone": site_tz_map.get(collector.site_id),
+                    "capabilities": collector.capabilities,
+                    "labels": collector.labels,
+                    "allowed_scopes": collector.allowed_scopes,
+                    "last_seen_utc": _format_dt(collector.last_seen_utc),
+                    "clock_skew_seconds": collector.clock_skew_seconds,
+                    "cert_serial": collector.cert_serial,
+                    "cert_fingerprint": collector.cert_fingerprint,
+                    "cert_valid_to": _format_dt(collector.cert_valid_to),
+                },
+                "error": error,
+            }
+        )
+    return templates.TemplateResponse(
+        "tenant_collector_detail.html",
+        {
+            "request": request,
+            "tenant_id": tenant_id,
+            "tenant_name": tenant.name if tenant else None,
+            "collector": collector,
+            "sites": sites,
+            "site_map": site_map,
+            "site_tz_map": site_tz_map,
+            "error": error,
+            "user": user,
+        },
+    )
+
+
+@router.post("/tenants/{tenant_id}/collectors/{collector_id}", response_model=None)
+async def tenant_collector_update(
+    request: Request,
+    tenant_id: int,
+    collector_id: int,
+    name: str | None = Form(None),
+    status: str | None = Form(None),
+    site_id: str | None = Form(None),
+    labels: str | None = Form(None),
+    capabilities: str | None = Form(None),
+    allowed_scopes: str | None = Form(None),
+):
+    user = require_tenant_role(request, tenant_id, UserRole.user_admin)
+    if not isinstance(user, User):
+        return user
+    wants_json = _wants_json(request)
+    if not name and not status and not site_id and not labels and not capabilities and not allowed_scopes:
+        try:
+            payload = await request.json()
+            name = payload.get("name") if payload else name
+            status = payload.get("status") if payload else status
+            site_id = str(payload.get("site_id")) if payload and payload.get("site_id") is not None else site_id
+            labels = payload.get("labels") if payload else labels
+            capabilities = payload.get("capabilities") if payload else capabilities
+            allowed_scopes = payload.get("allowed_scopes") if payload else allowed_scopes
+        except Exception:
+            pass
+    parsed_site_id = int(site_id) if site_id else None
+    with get_session() as session:
+        collector = (
+            session.query(Collector)
+            .filter(Collector.id == collector_id, Collector.tenant_id == tenant_id)
+            .one_or_none()
+        )
+        if not collector:
+            if wants_json:
+                return JSONResponse({"error": "Collector not found"}, status_code=404)
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/collectors",
+                "Collector not found",
+            )
+        if name:
+            collector.name = name.strip()
+        if status:
+            collector.status = status.strip()
+        if site_id is not None:
+            collector.site_id = parsed_site_id
+        if labels is not None:
+            collector.labels = labels.strip() or None
+        if capabilities is not None:
+            collector.capabilities = capabilities.strip() or None
+        if allowed_scopes is not None:
+            collector.allowed_scopes = allowed_scopes.strip() or None
+        log_audit(
+            actor_user_id=user.id,
+            action="collector.update",
+            entity_type="collector",
+            entity_id=collector.id,
+            details={"status": collector.status, "site_id": collector.site_id},
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse({"status": "updated", "collector_id": collector_id})
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/collectors",
+        "Collector updated",
     )
 
 
@@ -1151,6 +1616,10 @@ async def tenant_schedule_create(
             f"/tenants/{tenant_id}/schedules",
             "Start date/time is required",
         )
+    if start_at_dt.tzinfo is None:
+        start_at_dt = start_at_dt.replace(tzinfo=timezone.utc)
+    else:
+        start_at_dt = start_at_dt.astimezone(timezone.utc)
 
     if not network_ids:
         if wants_json:
@@ -1172,23 +1641,38 @@ async def tenant_schedule_create(
     network_csv = ",".join([str(item) for item in network_ids])
     scan_type_csv = ",".join([str(item) for item in scan_types])
 
+    window_minutes = 10
+    not_before = start_at_dt
+    not_after = start_at_dt + timedelta(minutes=window_minutes)
     with get_session() as session:
         schedule = ScanSchedule(
             tenant_id=tenant_id,
             site_id=parsed_site_id,
             name=(name or "").strip() or None,
-            start_at=start_at_dt,
+            scheduled_at_utc=start_at_dt,
+            not_before_utc=not_before,
+            not_after_utc=not_after,
             network_ids=network_csv,
             scan_types=scan_type_csv,
         )
         session.add(schedule)
         session.flush()
+        for scan_type in scan_types:
+            session.add(
+                ScanScheduleType(
+                    schedule_id=schedule.id,
+                    scan_type=str(scan_type),
+                    scheduled_at_utc=start_at_dt,
+                    not_before_utc=not_before,
+                    not_after_utc=not_after,
+                )
+            )
         log_audit(
             actor_user_id=user.id,
             action="tenant.schedule.create",
             entity_type="scan_schedule",
             entity_id=schedule.id,
-            details={"name": schedule.name, "start_at": _format_dt(schedule.start_at)},
+            details={"name": schedule.name, "scheduled_at_utc": _format_dt(schedule.scheduled_at_utc)},
             session=session,
         )
 
@@ -1197,12 +1681,333 @@ async def tenant_schedule_create(
             {
                 "status": "created",
                 "schedule_id": schedule.id,
-                "start_at": _format_dt(schedule.start_at),
+                "scheduled_at_utc": _format_dt(schedule.scheduled_at_utc),
+                "not_before_utc": _format_dt(schedule.not_before_utc),
+                "not_after_utc": _format_dt(schedule.not_after_utc),
             }
         )
     return _redirect_with_message(
         f"/tenants/{tenant_id}/schedules",
         "Schedule created",
+    )
+
+
+@router.get("/tenants/{tenant_id}/schedules/{schedule_id}", response_class=HTMLResponse)
+def tenant_schedule_detail(
+    request: Request, tenant_id: int, schedule_id: int
+) -> HTMLResponse:
+    user = require_tenant_role(request, tenant_id, UserRole.read_only)
+    if not isinstance(user, User):
+        return user
+
+    def fetch_schedule() -> Iterable[ScanSchedule]:
+        with get_session() as session:
+            return (
+                session.query(ScanSchedule)
+                .filter(ScanSchedule.id == schedule_id, ScanSchedule.tenant_id == tenant_id)
+                .all()
+            )
+
+    def fetch_types() -> Iterable[ScanScheduleType]:
+        with get_session() as session:
+            return (
+                session.query(ScanScheduleType)
+                .filter(ScanScheduleType.schedule_id == schedule_id)
+                .order_by(ScanScheduleType.scan_type)
+                .all()
+            )
+
+    def fetch_sites() -> Iterable[Site]:
+        with get_session() as session:
+            return (
+                session.query(Site)
+                .filter(Site.tenant_id == tenant_id)
+                .order_by(Site.name)
+                .all()
+            )
+
+    def fetch_tenant() -> Iterable[Tenant]:
+        with get_session() as session:
+            return session.query(Tenant).filter(Tenant.id == tenant_id).all()
+
+    schedules, error = _safe_query(fetch_schedule)
+    schedule = schedules[0] if schedules else None
+    schedule_types, _ = _safe_query(fetch_types)
+    sites, _ = _safe_query(fetch_sites)
+    tenants, _ = _safe_query(fetch_tenant)
+    tenant = tenants[0] if tenants else None
+    site_map = {site.id: site.name for site in sites}
+
+    if _wants_json(request):
+        if not schedule:
+            return JSONResponse({"error": "Schedule not found"}, status_code=404)
+        return JSONResponse(
+            {
+                "tenant_id": tenant_id,
+                "tenant_name": tenant.name if tenant else None,
+                "schedule": {
+                    "id": schedule.id,
+                    "name": schedule.name,
+                    "scheduled_at_utc": _format_dt(schedule.scheduled_at_utc),
+                    "not_before_utc": _format_dt(schedule.not_before_utc),
+                    "not_after_utc": _format_dt(schedule.not_after_utc),
+                    "actual_start_at_utc": _format_dt(schedule.actual_start_at_utc),
+                    "finished_at_utc": _format_dt(schedule.finished_at_utc),
+                    "site_id": schedule.site_id,
+                    "site_name": site_map.get(schedule.site_id),
+                    "site_timezone": site_tz_map.get(schedule.site_id),
+                    "site_timezone": site_tz_map.get(schedule.site_id),
+                    "network_ids": _parse_csv(schedule.network_ids),
+                    "scan_types": _parse_csv(schedule.scan_types),
+                    "created_at_utc": _format_dt(schedule.created_at),
+                },
+                "scan_types": [
+                    {
+                        "id": entry.id,
+                        "scan_type": entry.scan_type,
+                        "scheduled_at_utc": _format_dt(entry.scheduled_at_utc),
+                        "not_before_utc": _format_dt(entry.not_before_utc),
+                        "not_after_utc": _format_dt(entry.not_after_utc),
+                        "actual_start_at_utc": _format_dt(entry.actual_start_at_utc),
+                        "finished_at_utc": _format_dt(entry.finished_at_utc),
+                    }
+                    for entry in schedule_types
+                ],
+                "error": error,
+            }
+        )
+
+    return templates.TemplateResponse(
+        "tenant_schedule_detail.html",
+        {
+            "request": request,
+            "schedule": schedule,
+            "schedule_types": schedule_types,
+            "tenant_id": tenant_id,
+            "tenant_name": tenant.name if tenant else None,
+            "site_map": site_map,
+            "site_tz_map": site_tz_map,
+            "error": error,
+            "user": user,
+        },
+    )
+
+
+@router.post("/tenants/{tenant_id}/schedules/{schedule_id}/status", response_model=None)
+async def tenant_schedule_update_status(
+    request: Request,
+    tenant_id: int,
+    schedule_id: int,
+    actual_start_at_utc: str | None = Form(None),
+    finished_at_utc: str | None = Form(None),
+):
+    user = None
+    if not allow_collector_token(request):
+        user = require_tenant_role(request, tenant_id, UserRole.read_write)
+        if not isinstance(user, User):
+            return user
+    wants_json = _wants_json(request)
+    if not actual_start_at_utc and not finished_at_utc:
+        try:
+            payload = await request.json()
+            actual_start_at_utc = (
+                payload.get("actual_start_at_utc") if payload else None
+            ) or (payload.get("actual_start_at") if payload else None)
+            finished_at_utc = (
+                payload.get("finished_at_utc") if payload else None
+            ) or (payload.get("finished_at") if payload else None)
+        except Exception:
+            actual_start_at_utc = None
+            finished_at_utc = None
+
+    def parse_dt(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    actual_dt = parse_dt(actual_start_at_utc)
+    finished_dt = parse_dt(finished_at_utc)
+    if actual_start_at_utc and actual_dt is None:
+        if wants_json:
+            return JSONResponse({"error": "Invalid actual_start_at_utc"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/schedules/{schedule_id}",
+            "Invalid actual_start_at_utc",
+        )
+    if finished_at_utc and finished_dt is None:
+        if wants_json:
+            return JSONResponse({"error": "Invalid finished_at_utc"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/schedules/{schedule_id}",
+            "Invalid finished_at_utc",
+        )
+
+    with get_session() as session:
+        schedule = (
+            session.query(ScanSchedule)
+            .filter(ScanSchedule.id == schedule_id, ScanSchedule.tenant_id == tenant_id)
+            .one_or_none()
+        )
+        if not schedule:
+            if wants_json:
+                return JSONResponse({"error": "Schedule not found"}, status_code=404)
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/schedules",
+                "Schedule not found",
+            )
+        if actual_dt:
+            schedule.actual_start_at_utc = actual_dt
+        if finished_dt:
+            schedule.finished_at_utc = finished_dt
+        log_audit(
+            actor_user_id=user.id if user else None,
+            action="tenant.schedule.update",
+            entity_type="scan_schedule",
+            entity_id=schedule.id,
+            details={
+                "actual_start_at_utc": _format_dt(schedule.actual_start_at_utc),
+                "finished_at_utc": _format_dt(schedule.finished_at_utc),
+            },
+            session=session,
+        )
+
+    if wants_json:
+        return JSONResponse(
+            {
+                "status": "updated",
+                "schedule_id": schedule_id,
+                "actual_start_at_utc": _format_dt(actual_dt or schedule.actual_start_at_utc),
+                "finished_at_utc": _format_dt(finished_dt or schedule.finished_at_utc),
+            }
+        )
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/schedules/{schedule_id}",
+        "Schedule updated",
+    )
+
+
+@router.post(
+    "/tenants/{tenant_id}/schedules/{schedule_id}/types/{type_id}/status",
+    response_model=None,
+)
+async def tenant_schedule_type_update_status(
+    request: Request,
+    tenant_id: int,
+    schedule_id: int,
+    type_id: int,
+    actual_start_at_utc: str | None = Form(None),
+    finished_at_utc: str | None = Form(None),
+):
+    user = None
+    if not allow_collector_token(request):
+        user = require_tenant_role(request, tenant_id, UserRole.read_write)
+        if not isinstance(user, User):
+            return user
+    wants_json = _wants_json(request)
+    if not actual_start_at_utc and not finished_at_utc:
+        try:
+            payload = await request.json()
+            actual_start_at_utc = (
+                payload.get("actual_start_at_utc") if payload else None
+            ) or (payload.get("actual_start_at") if payload else None)
+            finished_at_utc = (
+                payload.get("finished_at_utc") if payload else None
+            ) or (payload.get("finished_at") if payload else None)
+        except Exception:
+            actual_start_at_utc = None
+            finished_at_utc = None
+
+    def parse_dt(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    actual_dt = parse_dt(actual_start_at_utc)
+    finished_dt = parse_dt(finished_at_utc)
+    if actual_start_at_utc and actual_dt is None:
+        if wants_json:
+            return JSONResponse({"error": "Invalid actual_start_at_utc"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/schedules/{schedule_id}",
+            "Invalid actual_start_at_utc",
+        )
+    if finished_at_utc and finished_dt is None:
+        if wants_json:
+            return JSONResponse({"error": "Invalid finished_at_utc"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/schedules/{schedule_id}",
+            "Invalid finished_at_utc",
+        )
+
+    with get_session() as session:
+        schedule = (
+            session.query(ScanSchedule)
+            .filter(ScanSchedule.id == schedule_id, ScanSchedule.tenant_id == tenant_id)
+            .one_or_none()
+        )
+        if not schedule:
+            if wants_json:
+                return JSONResponse({"error": "Schedule not found"}, status_code=404)
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/schedules",
+                "Schedule not found",
+            )
+        entry = (
+            session.query(ScanScheduleType)
+            .filter(
+                ScanScheduleType.id == type_id,
+                ScanScheduleType.schedule_id == schedule_id,
+            )
+            .one_or_none()
+        )
+        if not entry:
+            if wants_json:
+                return JSONResponse({"error": "Scan type entry not found"}, status_code=404)
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/schedules/{schedule_id}",
+                "Scan type entry not found",
+            )
+        if actual_dt:
+            entry.actual_start_at_utc = actual_dt
+        if finished_dt:
+            entry.finished_at_utc = finished_dt
+        log_audit(
+            actor_user_id=user.id if user else None,
+            action="tenant.schedule_type.update",
+            entity_type="scan_schedule_type",
+            entity_id=entry.id,
+            details={
+                "scan_type": entry.scan_type,
+                "actual_start_at_utc": _format_dt(entry.actual_start_at_utc),
+                "finished_at_utc": _format_dt(entry.finished_at_utc),
+            },
+            session=session,
+        )
+
+    if wants_json:
+        return JSONResponse(
+            {
+                "status": "updated",
+                "type_id": type_id,
+                "actual_start_at_utc": _format_dt(actual_dt or entry.actual_start_at_utc),
+                "finished_at_utc": _format_dt(finished_dt or entry.finished_at_utc),
+            }
+        )
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/schedules/{schedule_id}",
+        "Scan type updated",
     )
 
 @router.post("/tenants/{tenant_id}/scan-results", response_model=None)
@@ -1670,6 +2475,87 @@ def admin_tenants(request: Request) -> HTMLResponse:
             "error": error,
             "user": user,
             "message": request.query_params.get("message"),
+        },
+    )
+
+
+@router.get("/admin/schedules", response_class=HTMLResponse)
+def admin_schedules(request: Request) -> HTMLResponse:
+    user = require_superadmin(request)
+    if not isinstance(user, User):
+        return user
+
+    def fetch_schedules() -> Iterable[ScanSchedule]:
+        with get_session() as session:
+            query = session.query(ScanSchedule)
+            tenant_filter = request.query_params.get("tenant_id")
+            scan_type_filter = request.query_params.get("scan_type")
+            start_after = request.query_params.get("start_after")
+            start_before = request.query_params.get("start_before")
+            if tenant_filter:
+                try:
+                    query = query.filter(ScanSchedule.tenant_id == int(tenant_filter))
+                except ValueError:
+                    pass
+            if scan_type_filter:
+                query = query.filter(ScanSchedule.scan_types.ilike(f"%{scan_type_filter}%"))
+            if start_after:
+                query = query.filter(ScanSchedule.scheduled_at_utc >= start_after)
+            if start_before:
+                query = query.filter(ScanSchedule.scheduled_at_utc <= start_before)
+            query = query.order_by(ScanSchedule.scheduled_at_utc.asc())
+            query, _, _ = _paginate_query(query, request)
+            return query.all()
+
+    def fetch_tenants() -> Iterable[Tenant]:
+        with get_session() as session:
+            return session.query(Tenant).order_by(Tenant.name).all()
+
+    schedules, error = _safe_query(fetch_schedules)
+    tenants, _ = _safe_query(fetch_tenants)
+    tenant_map = {tenant.id: tenant.name for tenant in tenants}
+    site_map: dict[int, Site] = {}
+    site_ids = {schedule.site_id for schedule in schedules if schedule.site_id}
+    if site_ids:
+        with get_session() as session:
+            sites = session.query(Site).filter(Site.id.in_(site_ids)).all()
+            site_map = {site.id: site for site in sites}
+    if _wants_json(request):
+        limit, offset = _pagination_params(request)
+        return JSONResponse(
+            {
+                "schedules": [
+                    {
+                        "id": schedule.id,
+                        "tenant_id": schedule.tenant_id,
+                        "tenant_name": tenant_map.get(schedule.tenant_id),
+                        "site_id": schedule.site_id,
+                        "site_name": site_map.get(schedule.site_id).name if schedule.site_id in site_map else None,
+                        "site_timezone": site_map.get(schedule.site_id).timezone if schedule.site_id in site_map else None,
+                        "name": schedule.name,
+                        "scheduled_at_utc": _format_dt(schedule.scheduled_at_utc),
+                        "not_before_utc": _format_dt(schedule.not_before_utc),
+                        "not_after_utc": _format_dt(schedule.not_after_utc),
+                        "scan_types": _parse_csv(schedule.scan_types),
+                    }
+                    for schedule in schedules
+                ],
+                "tenants": [
+                    {"id": tenant.id, "name": tenant.name} for tenant in tenants
+                ],
+                "error": error,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+    return templates.TemplateResponse(
+        "admin_schedules.html",
+        {
+            "request": request,
+            "schedules": schedules,
+            "tenants": tenants,
+            "error": error,
+            "user": user,
         },
     )
 

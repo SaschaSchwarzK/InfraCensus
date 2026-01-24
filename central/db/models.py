@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import DateTime, Enum as SqlEnum, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Enum as SqlEnum, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from central.db.base import Base
@@ -28,9 +28,21 @@ class Collector(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    uuid: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="active")
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), nullable=True)
     location: Mapped[str] = mapped_column(String(200), nullable=True)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    labels: Mapped[str] = mapped_column(Text, nullable=True)
+    capabilities: Mapped[str] = mapped_column(Text, nullable=True)
+    allowed_scopes: Mapped[str] = mapped_column(Text, nullable=True)
+    cert_serial: Mapped[str] = mapped_column(String(128), nullable=True)
+    cert_fingerprint: Mapped[str] = mapped_column(String(256), nullable=True)
+    cert_valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    cert_valid_to: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    clock_skew_seconds: Mapped[int] = mapped_column(Integer, nullable=True)
+    risk_flags: Mapped[str] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     tenant: Mapped[Tenant] = relationship(back_populates="collectors")
@@ -70,12 +82,284 @@ class Device(Base):
     scan_job: Mapped[ScanJob] = relationship(back_populates="devices")
 
 
+class ScanTrigger(str, Enum):
+    schedule = "schedule"
+    manual = "manual"
+    api = "api"
+
+
+class ScanStatus(str, Enum):
+    queued = "queued"
+    running = "running"
+    finished = "finished"
+    failed = "failed"
+
+
+class ScanRun(Base):
+    __tablename__ = "scan_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), nullable=True)
+    collector_id: Mapped[int] = mapped_column(ForeignKey("collectors.id"), nullable=True)
+    started_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    trigger: Mapped[ScanTrigger] = mapped_column(SqlEnum(ScanTrigger), default=ScanTrigger.schedule)
+    scope: Mapped[str] = mapped_column(Text, nullable=True)
+    status: Mapped[ScanStatus] = mapped_column(SqlEnum(ScanStatus), default=ScanStatus.queued)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    tenant: Mapped["Tenant"] = relationship()
+    site: Mapped["Site"] = relationship()
+    collector: Mapped["Collector"] = relationship()
+
+
+class ObservationProtocol(str, Enum):
+    discovery = "discovery"
+    snmp = "snmp"
+    ssh = "ssh"
+    http = "http"
+    netconf = "netconf"
+
+
+class Observation(Base):
+    __tablename__ = "observations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scan_run_id: Mapped[int] = mapped_column(ForeignKey("scan_runs.id"), nullable=False)
+    device_id: Mapped[int] = mapped_column(ForeignKey("inventory_devices.id"), nullable=True)
+    ip_address: Mapped[str] = mapped_column(String(64), nullable=True)
+    protocol: Mapped[ObservationProtocol] = mapped_column(SqlEnum(ObservationProtocol), nullable=False)
+    collected_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    success: Mapped[bool] = mapped_column(Boolean, default=True)
+    error: Mapped[str] = mapped_column(Text, nullable=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=True)
+    raw_payload_ref: Mapped[str] = mapped_column(Text, nullable=True)
+    parsed_payload_json: Mapped[str] = mapped_column(Text, nullable=True)
+    evidence_hash: Mapped[str] = mapped_column(String(128), nullable=True)
+    parser_version: Mapped[str] = mapped_column(String(50), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    scan_run: Mapped["ScanRun"] = relationship()
+    device: Mapped["InventoryDevice"] = relationship()
+
+
+class InventoryDevice(Base):
+    __tablename__ = "inventory_devices"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), nullable=True)
+    device_uuid: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
+    vendor: Mapped[str] = mapped_column(String(120), nullable=True)
+    model: Mapped[str] = mapped_column(String(120), nullable=True)
+    device_family: Mapped[str] = mapped_column(String(120), nullable=True)
+    serial_number: Mapped[str] = mapped_column(String(120), nullable=True)
+    asset_tag: Mapped[str] = mapped_column(String(120), nullable=True)
+    hostname: Mapped[str] = mapped_column(String(255), nullable=True)
+    fqdn: Mapped[str] = mapped_column(String(255), nullable=True)
+    device_role: Mapped[str] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    tenant: Mapped["Tenant"] = relationship()
+    site: Mapped["Site"] = relationship()
+
+
+class IdentityType(str, Enum):
+    serial = "serial"
+    mac = "mac"
+    hostname = "hostname"
+    sysname = "sysname"
+    mgmt_ip = "mgmt_ip"
+
+
+class DeviceIdentity(Base):
+    __tablename__ = "device_identities"
+    __table_args__ = (
+        UniqueConstraint("device_id", "identity_type", "value", name="uq_device_identity"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("inventory_devices.id"), nullable=False)
+    identity_type: Mapped[IdentityType] = mapped_column(SqlEnum(IdentityType), nullable=False)
+    value: Mapped[str] = mapped_column(String(255), nullable=False)
+    first_seen_scan_run_id: Mapped[int] = mapped_column(ForeignKey("scan_runs.id"), nullable=True)
+    last_seen_scan_run_id: Mapped[int] = mapped_column(ForeignKey("scan_runs.id"), nullable=True)
+    confidence: Mapped[int] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    device: Mapped["InventoryDevice"] = relationship()
+    first_seen_scan_run: Mapped["ScanRun"] = relationship(foreign_keys=[first_seen_scan_run_id])
+    last_seen_scan_run: Mapped["ScanRun"] = relationship(foreign_keys=[last_seen_scan_run_id])
+
+
+class DeviceSnapshot(Base):
+    __tablename__ = "device_snapshots"
+    __table_args__ = (UniqueConstraint("scan_run_id", "device_id", name="uq_device_snapshot"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scan_run_id: Mapped[int] = mapped_column(ForeignKey("scan_runs.id"), nullable=False)
+    device_id: Mapped[int] = mapped_column(ForeignKey("inventory_devices.id"), nullable=False)
+    vendor: Mapped[str] = mapped_column(String(120), nullable=True)
+    model: Mapped[str] = mapped_column(String(120), nullable=True)
+    device_family: Mapped[str] = mapped_column(String(120), nullable=True)
+    serial_number: Mapped[str] = mapped_column(String(120), nullable=True)
+    hostname: Mapped[str] = mapped_column(String(255), nullable=True)
+    fqdn: Mapped[str] = mapped_column(String(255), nullable=True)
+    os_name: Mapped[str] = mapped_column(String(120), nullable=True)
+    os_version: Mapped[str] = mapped_column(String(120), nullable=True)
+    firmware_version: Mapped[str] = mapped_column(String(120), nullable=True)
+    mgmt_ips: Mapped[str] = mapped_column(Text, nullable=True)
+    reachable_protocols: Mapped[str] = mapped_column(Text, nullable=True)
+    auth_method: Mapped[str] = mapped_column(String(120), nullable=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    scan_run: Mapped["ScanRun"] = relationship()
+    device: Mapped["InventoryDevice"] = relationship()
+
+
+class InterfaceSnapshot(Base):
+    __tablename__ = "interface_snapshots"
+    __table_args__ = (
+        UniqueConstraint("scan_run_id", "device_id", "name", name="uq_interface_snapshot"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scan_run_id: Mapped[int] = mapped_column(ForeignKey("scan_runs.id"), nullable=False)
+    device_id: Mapped[int] = mapped_column(ForeignKey("inventory_devices.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    interface_type: Mapped[str] = mapped_column(String(120), nullable=True)
+    mac_address: Mapped[str] = mapped_column(String(120), nullable=True)
+    mtu: Mapped[int] = mapped_column(Integer, nullable=True)
+    speed: Mapped[int] = mapped_column(Integer, nullable=True)
+    admin_status: Mapped[str] = mapped_column(String(50), nullable=True)
+    oper_status: Mapped[str] = mapped_column(String(50), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=True)
+    vlans: Mapped[str] = mapped_column(Text, nullable=True)
+    vrf: Mapped[str] = mapped_column(String(120), nullable=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    scan_run: Mapped["ScanRun"] = relationship()
+    device: Mapped["InventoryDevice"] = relationship()
+
+
+class IpSnapshot(Base):
+    __tablename__ = "ip_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "scan_run_id",
+            "device_id",
+            "interface_name",
+            "ip_address",
+            "prefix_length",
+            name="uq_ip_snapshot",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scan_run_id: Mapped[int] = mapped_column(ForeignKey("scan_runs.id"), nullable=False)
+    device_id: Mapped[int] = mapped_column(ForeignKey("inventory_devices.id"), nullable=False)
+    interface_name: Mapped[str] = mapped_column(String(200), nullable=True)
+    ip_address: Mapped[str] = mapped_column(String(64), nullable=False)
+    prefix_length: Mapped[int] = mapped_column(Integer, nullable=False)
+    ip_version: Mapped[str] = mapped_column(String(10), nullable=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    scan_run: Mapped["ScanRun"] = relationship()
+    device: Mapped["InventoryDevice"] = relationship()
+
+
+class NeighborSnapshot(Base):
+    __tablename__ = "neighbor_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "scan_run_id",
+            "device_id",
+            "local_interface",
+            "remote_chassis_id",
+            "remote_interface",
+            name="uq_neighbor_snapshot",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scan_run_id: Mapped[int] = mapped_column(ForeignKey("scan_runs.id"), nullable=False)
+    device_id: Mapped[int] = mapped_column(ForeignKey("inventory_devices.id"), nullable=False)
+    local_interface: Mapped[str] = mapped_column(String(200), nullable=False)
+    remote_device_id: Mapped[int] = mapped_column(ForeignKey("inventory_devices.id"), nullable=True)
+    remote_chassis_id: Mapped[str] = mapped_column(String(200), nullable=True)
+    remote_interface: Mapped[str] = mapped_column(String(200), nullable=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    scan_run: Mapped["ScanRun"] = relationship()
+    device: Mapped["InventoryDevice"] = relationship(foreign_keys=[device_id])
+    remote_device: Mapped["InventoryDevice"] = relationship(foreign_keys=[remote_device_id])
+
+
+class ServiceSnapshot(Base):
+    __tablename__ = "service_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "scan_run_id",
+            "device_id",
+            "port",
+            "protocol",
+            name="uq_service_snapshot",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scan_run_id: Mapped[int] = mapped_column(ForeignKey("scan_runs.id"), nullable=False)
+    device_id: Mapped[int] = mapped_column(ForeignKey("inventory_devices.id"), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, nullable=False)
+    protocol: Mapped[str] = mapped_column(String(20), nullable=False)
+    service_name: Mapped[str] = mapped_column(String(120), nullable=True)
+    banner: Mapped[str] = mapped_column(Text, nullable=True)
+    tls_subject: Mapped[str] = mapped_column(Text, nullable=True)
+    tls_issuer: Mapped[str] = mapped_column(Text, nullable=True)
+    tls_not_before_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    tls_not_after_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    tls_sans: Mapped[str] = mapped_column(Text, nullable=True)
+    tls_fingerprint: Mapped[str] = mapped_column(String(128), nullable=True)
+    http_title: Mapped[str] = mapped_column(Text, nullable=True)
+    http_headers: Mapped[str] = mapped_column(Text, nullable=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    scan_run: Mapped["ScanRun"] = relationship()
+    device: Mapped["InventoryDevice"] = relationship()
+
+
+class ConfigSnapshot(Base):
+    __tablename__ = "config_snapshots"
+    __table_args__ = (
+        UniqueConstraint("scan_run_id", "device_id", name="uq_config_snapshot"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scan_run_id: Mapped[int] = mapped_column(ForeignKey("scan_runs.id"), nullable=False)
+    device_id: Mapped[int] = mapped_column(ForeignKey("inventory_devices.id"), nullable=False)
+    retrieved_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    config_hash: Mapped[str] = mapped_column(String(128), nullable=True)
+    storage_ref: Mapped[str] = mapped_column(Text, nullable=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=True)
+    redacted_hash: Mapped[str] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    scan_run: Mapped["ScanRun"] = relationship()
+    device: Mapped["InventoryDevice"] = relationship()
+
 class Site(Base):
     __tablename__ = "sites"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(120), nullable=False)
     code: Mapped[str] = mapped_column(String(50), nullable=True)
     description: Mapped[str] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
@@ -132,9 +416,62 @@ class ScanSchedule(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
     site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), nullable=True)
     name: Mapped[str] = mapped_column(String(200), nullable=True)
-    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    scheduled_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    not_before_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    not_after_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    actual_start_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     network_ids: Mapped[str] = mapped_column(Text, nullable=True)
     scan_types: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    tenant: Mapped["Tenant"] = relationship()
+    site: Mapped["Site"] = relationship()
+
+
+class ScanScheduleType(Base):
+    __tablename__ = "scan_schedule_types"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    schedule_id: Mapped[int] = mapped_column(
+        ForeignKey("scan_schedules.id"), nullable=False
+    )
+    scan_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    scheduled_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    not_before_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    not_after_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    actual_start_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    schedule: Mapped["ScanSchedule"] = relationship()
+
+
+class CollectorCertificate(Base):
+    __tablename__ = "collector_certificates"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    collector_id: Mapped[int] = mapped_column(ForeignKey("collectors.id"), nullable=False)
+    serial: Mapped[str] = mapped_column(String(128), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(256), nullable=False)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    valid_to: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    collector: Mapped["Collector"] = relationship()
+
+
+class CollectorEnrollmentToken(Base):
+    __tablename__ = "collector_enrollment_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), nullable=True)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     tenant: Mapped["Tenant"] = relationship()

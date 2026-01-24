@@ -16,6 +16,10 @@
           <input id="site-name" name="name" type="text" value="{{ site.name }}" required style="width: 60%; padding: 0.4rem;" />
         </div>
         <div style="margin-bottom: 0.5rem;">
+          <label for="site-timezone">Timezone (IANA)</label><br />
+          <input id="site-timezone" name="timezone" type="text" value="{{ site.timezone }}" required style="width: 60%; padding: 0.4rem;" />
+        </div>
+        <div style="margin-bottom: 0.5rem;">
           <label for="site-code">Code</label><br />
           <input id="site-code" name="code" type="text" value="{{ site.code or '' }}" style="width: 60%; padding: 0.4rem;" />
         </div>

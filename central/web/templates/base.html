@@ -23,6 +23,7 @@
     .meta { color: #667085; font-size: 0.9rem; }
     .tag { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px; background: #eef4ff; color: #3b82f6; font-size: 0.75rem; }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.4/build/global/luxon.min.js"></script>
 </head>
 <body>
   <header>
@@ -32,6 +33,7 @@
       <a href="/">Overview</a>
       <a href="/tenants">Tenants</a>
       <a href="/admin/tenants">Superadmin</a>
+      <a href="/admin/schedules">Schedules</a>
       <a href="/admin/audit">Audit Log</a>
     </nav>
     {% if user %}
@@ -46,5 +48,35 @@
   <main>
     {% block content %}{% endblock %}
   </main>
+  <script>
+    (function () {
+      if (!window.luxon) {
+        return;
+      }
+      var DateTime = window.luxon.DateTime;
+      var nodes = document.querySelectorAll(".time-utc");
+      nodes.forEach(function (node) {
+        var utcValue = node.getAttribute("data-utc");
+        var tz = node.getAttribute("data-tz");
+        if (!utcValue) {
+          return;
+        }
+        var utc = DateTime.fromISO(utcValue, { zone: "utc" });
+        if (!utc.isValid) {
+          node.textContent = utcValue;
+          return;
+        }
+        var utcText = utc.toFormat("yyyy-LL-dd HH:mm 'UTC'");
+        if (tz) {
+          var local = utc.setZone(tz);
+          if (local.isValid) {
+            node.textContent = utcText + " (" + local.toFormat("yyyy-LL-dd HH:mm") + " " + tz + ")";
+            return;
+          }
+        }
+        node.textContent = utcText + " (local unavailable)";
+      });
+    })();
+  </script>
 </body>
 </html>

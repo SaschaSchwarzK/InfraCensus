@@ -18,6 +18,10 @@
         <input id="site-name" name="name" type="text" required style="width: 60%; padding: 0.4rem;" />
       </div>
       <div style="margin-bottom: 0.5rem;">
+        <label for="site-timezone">Timezone (IANA)</label><br />
+        <input id="site-timezone" name="timezone" type="text" placeholder="Europe/Berlin" required style="width: 60%; padding: 0.4rem;" />
+      </div>
+      <div style="margin-bottom: 0.5rem;">
         <label for="site-code">Code</label><br />
         <input id="site-code" name="code" type="text" style="width: 60%; padding: 0.4rem;" />
       </div>
@@ -31,6 +35,7 @@
       <thead>
         <tr>
           <th>Name</th>
+          <th>Timezone</th>
           <th>Code</th>
           <th>Description</th>
           <th>Actions</th>
@@ -40,6 +45,7 @@
         {% for site in sites %}
           <tr>
             <td>{{ site.name }}</td>
+            <td>{{ site.timezone }}</td>
             <td>{{ site.code or "" }}</td>
             <td class="meta">{{ site.description or "" }}</td>
             <td>

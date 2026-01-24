@@ -14,6 +14,7 @@ class Settings:
     oidc_scopes: str = "openid email profile"
     oidc_redirect_uri: str = "http://localhost:8000/oidc/callback"
     oidc_logout_url: str | None = None
+    collector_tokens: str = ""
 
 
 settings = Settings()

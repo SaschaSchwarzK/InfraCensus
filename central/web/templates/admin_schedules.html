@@ -2,70 +2,22 @@
 
 {% block content %}
   <div class="card">
-    <h2>Tenant {{ tenant_name or tenant_id }} Schedules</h2>
-    <p class="meta">
-      <a href="/tenants">Tenants</a> / <a href="/tenants/{{ tenant_id }}/schedules">Schedules</a>
-    </p>
-    {% if message %}
-      <p class="meta">{{ message }}</p>
-    {% endif %}
+    <h2>Superadmin: Global Schedule Calendar</h2>
+    <p class="meta">Filter scheduled scans across all tenants. Grid is UTC hours.</p>
     {% if error %}
       <p class="meta">{{ error }}</p>
     {% endif %}
-    <form method="get" action="/tenants/{{ tenant_id }}/schedules" style="margin-bottom: 1rem;">
-      <label for="site-filter">Filter by site</label><br />
-      <select id="site-filter" name="site_id" style="width: 40%; padding: 0.4rem;">
-        <option value="">All sites</option>
-        {% for site in sites %}
-          <option value="{{ site.id }}" {% if site_filter and site_filter|int == site.id %}selected{% endif %}>{{ site.name }}</option>
-        {% endfor %}
-      </select>
-      <button type="submit">Apply</button>
-    </form>
-    <form method="post" action="/tenants/{{ tenant_id }}/schedules" style="margin-bottom: 1rem;">
-      <div style="margin-bottom: 0.5rem;">
-        <label for="schedule-name">Name</label><br />
-        <input id="schedule-name" name="name" type="text" style="width: 60%; padding: 0.4rem;" />
-      </div>
-      <div style="margin-bottom: 0.5rem;">
-        <label for="schedule-date">Start date</label><br />
-        <input id="schedule-date" name="start_date" type="date" required style="width: 40%; padding: 0.4rem;" />
-      </div>
-      <div style="margin-bottom: 0.5rem;">
-        <label for="schedule-time">Start time</label><br />
-        <input id="schedule-time" name="start_time" type="time" required style="width: 40%; padding: 0.4rem;" />
-      </div>
-      <div style="margin-bottom: 0.5rem;">
-        <label for="schedule-site">Site (optional)</label><br />
-        <select id="schedule-site" name="site_id" style="width: 60%; padding: 0.4rem;">
-          <option value="">No site</option>
-          {% for site in sites %}
-            <option value="{{ site.id }}">{{ site.name }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div style="margin-bottom: 0.5rem;">
-        <label>Networks</label><br />
-        {% for network in networks %}
-          <label><input type="checkbox" name="network_ids" value="{{ network.id }}" /> {{ network.name }} ({{ network.cidr }})</label><br />
-        {% else %}
-          <span class="meta">No networks available.</span>
-        {% endfor %}
-      </div>
-      <div style="margin-bottom: 0.5rem;">
-        <label>Scan types</label><br />
-        <label><input type="checkbox" name="scan_types" value="network_discovery" /> Network discovery</label><br />
-        <label><input type="checkbox" name="scan_types" value="snmp" /> SNMP</label><br />
-        <label><input type="checkbox" name="scan_types" value="ssh" /> SSH</label><br />
-        <label><input type="checkbox" name="scan_types" value="http" /> HTTP(S)</label><br />
-        <label><input type="checkbox" name="scan_types" value="netconf" /> NETCONF</label>
-      </div>
-      <button type="submit">Schedule Scan</button>
-    </form>
-    <h3>Schedule Calendar</h3>
-    <p class="meta">Grid is UTC hours. Each block shows local time in the tooltip when available.</p>
     <div class="card" style="padding: 1rem;">
       <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.75rem;">
+        <div>
+          <label for="calendar-tenant">Tenant</label><br />
+          <select id="calendar-tenant" style="padding: 0.4rem; min-width: 220px;">
+            <option value="">All tenants</option>
+            {% for tenant in tenants %}
+              <option value="{{ tenant.id }}">{{ tenant.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
         <div>
           <label for="calendar-start">Start date (UTC)</label><br />
           <input id="calendar-start" type="date" style="padding: 0.4rem;" />
@@ -102,59 +54,6 @@
         </table>
       </div>
     </div>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Planned Start</th>
-          <th>Actual Start</th>
-          <th>Finish</th>
-          <th>Site</th>
-          <th>Networks</th>
-          <th>Scan Types</th>
-          <th>Details</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for schedule in schedules %}
-          <tr>
-            <td>{{ schedule.name or "" }}</td>
-            <td class="meta">
-              <span class="time-utc" data-utc="{{ schedule.scheduled_at_utc.isoformat() }}" data-tz="{{ site_tz_map.get(schedule.site_id, '') }}"></span>
-            </td>
-            <td class="meta">
-              {% if schedule.actual_start_at_utc %}
-                <span class="time-utc" data-utc="{{ schedule.actual_start_at_utc.isoformat() }}" data-tz="{{ site_tz_map.get(schedule.site_id, '') }}"></span>
-              {% endif %}
-            </td>
-            <td class="meta">
-              {% if schedule.finished_at_utc %}
-                <span class="time-utc" data-utc="{{ schedule.finished_at_utc.isoformat() }}" data-tz="{{ site_tz_map.get(schedule.site_id, '') }}"></span>
-              {% endif %}
-            </td>
-            <td>{{ site_map.get(schedule.site_id, "") if schedule.site_id else "" }}</td>
-            <td class="meta">
-              {% if schedule.network_ids %}
-                {% set names = [] %}
-                {% for network_id in schedule.network_ids.split(',') %}
-                  {% set network_id = network_id.strip() %}
-                  {% if network_id %}
-                    {% set _ = names.append(network_map.get(network_id|int, network_id)) %}
-                  {% endif %}
-                {% endfor %}
-                {{ names | join(", ") }}
-              {% endif %}
-            </td>
-            <td class="meta">{{ schedule.scan_types or "" }}</td>
-            <td><a href="/tenants/{{ tenant_id }}/schedules/{{ schedule.id }}">View</a></td>
-          </tr>
-        {% else %}
-          <tr>
-            <td colspan="8" class="meta">No schedules yet.</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
   </div>
   <script>
     (function () {
@@ -163,6 +62,7 @@
       }
       var DateTime = window.luxon.DateTime;
       var calendarBody = document.getElementById("schedule-calendar-body");
+      var tenantInput = document.getElementById("calendar-tenant");
       var startInput = document.getElementById("calendar-start");
       var daysInput = document.getElementById("calendar-days");
       var typeInput = document.getElementById("calendar-scan-type");
@@ -203,7 +103,14 @@
       }
 
       function buildTooltip(schedule, utcTime) {
-        var label = schedule.name || "schedule";
+        var parts = [];
+        if (schedule.tenant_name) {
+          parts.push(schedule.tenant_name);
+        }
+        if (schedule.name) {
+          parts.push(schedule.name);
+        }
+        var label = parts.length ? parts.join(" | ") : "schedule";
         if (schedule.site_timezone) {
           var local = DateTime.fromISO(utcTime, { zone: "utc" }).setZone(schedule.site_timezone);
           if (local.isValid) {
@@ -211,6 +118,11 @@
           }
         }
         return label + " | UTC " + utcTime + " | local unavailable";
+      }
+
+      function buildLabel(schedule) {
+        var tenantLabel = schedule.tenant_name ? schedule.tenant_name + ": " : "";
+        return tenantLabel + (schedule.name || "scan");
       }
 
       function loadCalendar() {
@@ -228,12 +140,16 @@
         params.set("start_after", startDate.toISO());
         params.set("start_before", endDate.toISO());
         params.set("limit", "200");
+        var tenantValue = tenantInput.value;
+        if (tenantValue) {
+          params.set("tenant_id", tenantValue);
+        }
         var scanType = typeInput.value.trim();
         if (scanType) {
           params.set("scan_type", scanType);
         }
 
-        fetch("/tenants/{{ tenant_id }}/schedules?" + params.toString(), {
+        fetch("/admin/schedules?" + params.toString(), {
           headers: { "Accept": "application/json" }
         })
           .then(function (response) { return response.json(); })
@@ -249,7 +165,7 @@
               }
               var day = utc.toFormat("yyyy-LL-dd");
               var hour = utc.hour;
-              var label = schedule.name || "scan";
+              var label = buildLabel(schedule);
               var tooltip = buildTooltip(schedule, schedule.scheduled_at_utc);
               setCellContent(day, hour, label, tooltip);
             });
@@ -259,6 +175,9 @@
           });
       }
 
+      if (tenantInput) {
+        tenantInput.addEventListener("change", loadCalendar);
+      }
       applyButton.addEventListener("click", loadCalendar);
       loadCalendar();
     })();

@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="card">
+    <h2>Collector Details for {{ tenant_name or tenant_id }}</h2>
+    <p class="meta">
+      <a href="/tenants">Tenants</a> /
+      <a href="/tenants/{{ tenant_id }}/collectors">Collectors</a> /
+      Details
+    </p>
+    {% if error %}
+      <p class="meta">{{ error }}</p>
+    {% endif %}
+    {% if collector %}
+      <table>
+        <tbody>
+          <tr><th>Name</th><td>{{ collector.name }}</td></tr>
+          <tr><th>UUID</th><td>{{ collector.uuid }}</td></tr>
+          <tr><th>Status</th><td>{{ collector.status }}</td></tr>
+          <tr><th>Site</th><td>{{ site_map.get(collector.site_id, "") }}</td></tr>
+          <tr><th>Capabilities</th><td class="meta">{{ collector.capabilities or "" }}</td></tr>
+          <tr><th>Labels</th><td class="meta">{{ collector.labels or "" }}</td></tr>
+          <tr><th>Allowed Scopes</th><td class="meta">{{ collector.allowed_scopes or "" }}</td></tr>
+          <tr>
+            <th>Last Seen</th>
+            <td class="meta">
+              {% if collector.last_seen_utc %}
+                <span class="time-utc" data-utc="{{ collector.last_seen_utc.isoformat() }}" data-tz="{{ site_tz_map.get(collector.site_id, '') }}"></span>
+              {% endif %}
+            </td>
+          </tr>
+          <tr><th>Clock Skew (s)</th><td class="meta">{{ collector.clock_skew_seconds if collector.clock_skew_seconds is not none else "" }}</td></tr>
+          <tr><th>Cert Serial</th><td class="meta">{{ collector.cert_serial or "" }}</td></tr>
+          <tr><th>Cert Fingerprint</th><td class="meta">{{ collector.cert_fingerprint or "" }}</td></tr>
+          <tr>
+            <th>Cert Valid To</th>
+            <td class="meta">
+              {% if collector.cert_valid_to %}
+                <span class="time-utc" data-utc="{{ collector.cert_valid_to.isoformat() }}" data-tz="{{ site_tz_map.get(collector.site_id, '') }}"></span>
+              {% endif %}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <h3 style="margin-top: 1rem;">Update Collector</h3>
+      <form method="post" action="/tenants/{{ tenant_id }}/collectors/{{ collector.id }}">
+        <div style="margin-bottom: 0.5rem;">
+          <label for="collector-name">Name</label><br />
+          <input id="collector-name" name="name" type="text" value="{{ collector.name }}" style="width: 60%; padding: 0.4rem;" />
+        </div>
+        <div style="margin-bottom: 0.5rem;">
+          <label for="collector-status">Status</label><br />
+          <select id="collector-status" name="status" style="width: 40%; padding: 0.4rem;">
+            <option value="active" {% if collector.status == "active" %}selected{% endif %}>Active</option>
+            <option value="disabled" {% if collector.status == "disabled" %}selected{% endif %}>Disabled</option>
+          </select>
+        </div>
+        <div style="margin-bottom: 0.5rem;">
+          <label for="collector-site">Site</label><br />
+          <select id="collector-site" name="site_id" style="width: 60%; padding: 0.4rem;">
+            <option value="">No site</option>
+            {% for site in sites %}
+              <option value="{{ site.id }}" {% if collector.site_id == site.id %}selected{% endif %}>{{ site.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div style="margin-bottom: 0.5rem;">
+          <label for="collector-capabilities">Capabilities</label><br />
+          <input id="collector-capabilities" name="capabilities" type="text" value="{{ collector.capabilities or '' }}" style="width: 80%; padding: 0.4rem;" />
+        </div>
+        <div style="margin-bottom: 0.5rem;">
+          <label for="collector-labels">Labels</label><br />
+          <input id="collector-labels" name="labels" type="text" value="{{ collector.labels or '' }}" style="width: 80%; padding: 0.4rem;" />
+        </div>
+        <div style="margin-bottom: 0.5rem;">
+          <label for="collector-scopes">Allowed Scopes</label><br />
+          <input id="collector-scopes" name="allowed_scopes" type="text" value="{{ collector.allowed_scopes or '' }}" style="width: 80%; padding: 0.4rem;" />
+        </div>
+        <button type="submit">Save</button>
+      </form>
+    {% else %}
+      <p class="meta">Collector not found.</p>
+    {% endif %}
+  </div>
+{% endblock %}

@@ -27,6 +27,55 @@
     {% if error %}
       <p class="meta">Database not initialized: {{ error }}</p>
     {% endif %}
+    <h3>Tenant Schedule Calendar</h3>
+    <p class="meta">Select a tenant to view scheduled scans. Grid is UTC hours.</p>
+    <div class="card" style="padding: 1rem;">
+      <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.75rem;">
+        <div>
+          <label for="calendar-tenant">Tenant</label><br />
+          <select id="calendar-tenant" style="padding: 0.4rem; min-width: 220px;">
+            <option value="">Select tenant</option>
+            {% for tenant in tenants %}
+              <option value="{{ tenant.id }}">{{ tenant.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="calendar-start">Start date (UTC)</label><br />
+          <input id="calendar-start" type="date" style="padding: 0.4rem;" />
+        </div>
+        <div>
+          <label for="calendar-days">Days</label><br />
+          <select id="calendar-days" style="padding: 0.4rem;">
+            <option value="7">7</option>
+            <option value="14">14</option>
+            <option value="30">30</option>
+          </select>
+        </div>
+        <div>
+          <label for="calendar-scan-type">Scan type</label><br />
+          <input id="calendar-scan-type" type="text" placeholder="snmp, ssh" style="padding: 0.4rem;" />
+        </div>
+        <div style="align-self: flex-end;">
+          <button id="calendar-apply" type="button">Apply</button>
+        </div>
+      </div>
+      <div style="overflow-x: auto;">
+        <table id="tenant-calendar" style="min-width: 960px;">
+          <thead>
+            <tr>
+              <th>Day (UTC)</th>
+              {% for hour in range(0, 24) %}
+                <th>{{ "%02d"|format(hour) }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody id="tenant-calendar-body">
+            <tr><td colspan="25" class="meta">Select a tenant to load schedules.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
     <table>
       <thead>
         <tr>
@@ -57,4 +106,124 @@
       </tbody>
     </table>
   </div>
+  <script>
+    (function () {
+      if (!window.luxon) {
+        return;
+      }
+      var DateTime = window.luxon.DateTime;
+      var calendarBody = document.getElementById("tenant-calendar-body");
+      var tenantInput = document.getElementById("calendar-tenant");
+      var startInput = document.getElementById("calendar-start");
+      var daysInput = document.getElementById("calendar-days");
+      var typeInput = document.getElementById("calendar-scan-type");
+      var applyButton = document.getElementById("calendar-apply");
+
+      function formatDay(dt) {
+        return dt.toFormat("yyyy-LL-dd");
+      }
+
+      function buildEmptyRows(startDate, days) {
+        var rows = [];
+        for (var i = 0; i < days; i += 1) {
+          var day = startDate.plus({ days: i });
+          var cells = "<td>" + formatDay(day) + "</td>";
+          for (var hour = 0; hour < 24; hour += 1) {
+            cells += "<td data-day=\"" + formatDay(day) + "\" data-hour=\"" + hour + "\"></td>";
+          }
+          rows.push("<tr>" + cells + "</tr>");
+        }
+        return rows.join("");
+      }
+
+      function setCellContent(day, hour, label, tooltip) {
+        var selector = "td[data-day=\"" + day + "\"][data-hour=\"" + hour + "\"]";
+        var cell = calendarBody.querySelector(selector);
+        if (!cell) {
+          return;
+        }
+        cell.style.background = "#e6f4ff";
+        cell.style.border = "1px solid #b7ddff";
+        cell.style.position = "relative";
+        cell.title = tooltip;
+        if (!cell.textContent) {
+          cell.textContent = label;
+        } else {
+          cell.textContent = cell.textContent + ", " + label;
+        }
+      }
+
+      function buildTooltip(schedule, utcTime) {
+        var label = schedule.name || "schedule";
+        var tenantLabel = schedule.tenant_name ? schedule.tenant_name + " | " : "";
+        if (schedule.site_timezone) {
+          var local = DateTime.fromISO(utcTime, { zone: "utc" }).setZone(schedule.site_timezone);
+          if (local.isValid) {
+            return tenantLabel + label + " | UTC " + utcTime + " | " + local.toFormat("yyyy-LL-dd HH:mm") + " " + schedule.site_timezone;
+          }
+        }
+        return tenantLabel + label + " | UTC " + utcTime + " | local unavailable";
+      }
+
+      function loadCalendar() {
+        if (!tenantInput || !tenantInput.value) {
+          calendarBody.innerHTML = "<tr><td colspan=\"25\" class=\"meta\">Select a tenant to load schedules.</td></tr>";
+          return;
+        }
+        var startDate = startInput.value
+          ? DateTime.fromISO(startInput.value, { zone: "utc" })
+          : DateTime.utc().startOf("day");
+        if (!startDate.isValid) {
+          startDate = DateTime.utc().startOf("day");
+        }
+        var days = parseInt(daysInput.value || "7", 10);
+        calendarBody.innerHTML = buildEmptyRows(startDate, days);
+
+        var endDate = startDate.plus({ days: days });
+        var params = new URLSearchParams();
+        params.set("tenant_id", tenantInput.value);
+        params.set("start_after", startDate.toISO());
+        params.set("start_before", endDate.toISO());
+        params.set("limit", "200");
+        var scanType = typeInput.value.trim();
+        if (scanType) {
+          params.set("scan_type", scanType);
+        }
+
+        fetch("/admin/schedules?" + params.toString(), {
+          headers: { "Accept": "application/json" }
+        })
+          .then(function (response) { return response.json(); })
+          .then(function (data) {
+            var schedules = data.schedules || [];
+            schedules.forEach(function (schedule) {
+              if (!schedule.scheduled_at_utc) {
+                return;
+              }
+              var utc = DateTime.fromISO(schedule.scheduled_at_utc, { zone: "utc" });
+              if (!utc.isValid) {
+                return;
+              }
+              var day = utc.toFormat("yyyy-LL-dd");
+              var hour = utc.hour;
+              var label = schedule.name || "scan";
+              var tooltip = buildTooltip(schedule, schedule.scheduled_at_utc);
+              setCellContent(day, hour, label, tooltip);
+            });
+          })
+          .catch(function () {
+            calendarBody.innerHTML = "<tr><td colspan=\"25\" class=\"meta\">Failed to load schedule data.</td></tr>";
+          });
+      }
+
+      if (tenantInput && tenantInput.value === "" && tenantInput.options.length > 1) {
+        tenantInput.selectedIndex = 1;
+      }
+      if (tenantInput) {
+        tenantInput.addEventListener("change", loadCalendar);
+      }
+      applyButton.addEventListener("click", loadCalendar);
+      loadCalendar();
+    })();
+  </script>
 {% endblock %}

@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from passlib.context import CryptContext
 
 from central.core.auth import has_tenant_access
+from central.core.config import settings
 from central.db.models import TenantUser, User, UserRole
 from central.db.session import get_session
 
@@ -81,3 +82,16 @@ def require_tenant_role(
     if has_tenant_access(memberships, tenant_id, role):
         return user
     return HTMLResponse(content="Forbidden", status_code=403)
+
+
+def allow_collector_token(request: Request) -> bool:
+    if not settings.collector_tokens:
+        return False
+    header = request.headers.get("authorization") or ""
+    token = ""
+    if header.lower().startswith("bearer "):
+        token = header.split(" ", 1)[1].strip()
+    if not token:
+        token = request.headers.get("x-collector-token", "").strip()
+    valid_tokens = {item.strip() for item in settings.collector_tokens.split(",") if item.strip()}
+    return token in valid_tokens

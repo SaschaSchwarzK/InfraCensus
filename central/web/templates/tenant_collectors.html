@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="card">
+    <h2>Collectors for {{ tenant_name or tenant_id }}</h2>
+    <p class="meta">
+      <a href="/tenants">Tenants</a> / <a href="/tenants/{{ tenant_id }}/collectors">Collectors</a>
+    </p>
+    {% if message %}
+      <p class="meta">{{ message }}</p>
+    {% endif %}
+    {% if error %}
+      <p class="meta">{{ error }}</p>
+    {% endif %}
+    <form method="get" action="/tenants/{{ tenant_id }}/collectors" style="margin-bottom: 1rem;">
+      <label for="collector-site">Filter by site</label><br />
+      <select id="collector-site" name="site_id" style="width: 40%; padding: 0.4rem;">
+        <option value="">All sites</option>
+        {% for site in sites %}
+          <option value="{{ site.id }}">{{ site.name }}</option>
+        {% endfor %}
+      </select>
+      <label for="collector-status" style="margin-left: 1rem;">Status</label>
+      <select id="collector-status" name="status" style="padding: 0.4rem;">
+        <option value="">All</option>
+        <option value="active">Active</option>
+        <option value="disabled">Disabled</option>
+      </select>
+      <button type="submit">Apply</button>
+    </form>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>UUID</th>
+          <th>Status</th>
+          <th>Site</th>
+          <th>Last Seen</th>
+          <th>Cert</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for collector in collectors %}
+          <tr>
+            <td>{{ collector.name }}</td>
+            <td class="meta">{{ collector.uuid }}</td>
+            <td>{{ collector.status }}</td>
+            <td>{{ site_map.get(collector.site_id, "") }}</td>
+            <td class="meta">
+              {% if collector.last_seen_utc %}
+                <span class="time-utc" data-utc="{{ collector.last_seen_utc.isoformat() }}" data-tz="{{ site_tz_map.get(collector.site_id, '') }}"></span>
+              {% endif %}
+              {% if collector.clock_skew_seconds is not none and collector.clock_skew_seconds|abs > 60 %}
+                <span class="tag" title="Check NTP or chrony on collector host">skew</span>
+              {% endif %}
+            </td>
+            <td class="meta">{{ collector.cert_serial or "" }}</td>
+            <td><a href="/tenants/{{ tenant_id }}/collectors/{{ collector.id }}">Manage</a></td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="7" class="meta">No collectors yet.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

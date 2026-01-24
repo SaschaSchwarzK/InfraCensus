@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="card">
+    <h2>Collector Enrollment for {{ tenant_name or tenant_id }}</h2>
+    <p class="meta">
+      <a href="/tenants">Tenants</a> / Enrollment Tokens
+    </p>
+    {% if message %}
+      <p class="meta">{{ message }}</p>
+    {% endif %}
+    {% if error %}
+      <p class="meta">{{ error }}</p>
+    {% endif %}
+    {% if issued_token %}
+      <p class="meta">Enrollment token (copy now; shown once):</p>
+      <pre>{{ issued_token }}</pre>
+    {% endif %}
+    <form method="post" action="/tenants/{{ tenant_id }}/collectors/enrollment" style="margin-bottom: 1rem;">
+      <div style="margin-bottom: 0.5rem;">
+        <label for="token-site">Site (optional)</label><br />
+        <select id="token-site" name="site_id" style="width: 60%; padding: 0.4rem;">
+          <option value="">No site</option>
+          {% for site in sites %}
+            <option value="{{ site.id }}">{{ site.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        <label for="token-ttl">TTL (minutes)</label><br />
+        <input id="token-ttl" name="ttl_minutes" type="number" min="1" max="1440" value="30" style="width: 40%; padding: 0.4rem;" />
+      </div>
+      <button type="submit">Create Token</button>
+    </form>
+    <table>
+      <thead>
+        <tr>
+          <th>Site</th>
+          <th>Expires</th>
+          <th>Used</th>
+          <th>Created By</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for token in tokens %}
+          <tr>
+            <td>{{ site_map.get(token.site_id, "") }}</td>
+            <td class="meta">
+              {% if token.expires_at %}
+                <span class="time-utc" data-utc="{{ token.expires_at.isoformat() }}" data-tz="{{ site_tz_map.get(token.site_id, '') }}"></span>
+              {% endif %}
+            </td>
+            <td class="meta">
+              {% if token.used_at %}
+                <span class="time-utc" data-utc="{{ token.used_at.isoformat() }}" data-tz="{{ site_tz_map.get(token.site_id, '') }}"></span>
+              {% endif %}
+            </td>
+            <td>{{ user_map.get(token.created_by_user_id, "") }}</td>
+            <td class="meta">
+              {% if token.created_at %}
+                <span class="time-utc" data-utc="{{ token.created_at.isoformat() }}" data-tz="{{ site_tz_map.get(token.site_id, '') }}"></span>
+              {% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="5" class="meta">No enrollment tokens yet.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

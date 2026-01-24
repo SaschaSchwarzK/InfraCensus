@@ -28,7 +28,11 @@
         {% for result in results %}
           <tr>
             <td>{{ result.label }}</td>
-            <td class="meta">{{ result.created_at }}</td>
+            <td class="meta">
+              {% if result.created_at %}
+                <span class="time-utc" data-utc="{{ result.created_at.isoformat() }}" data-tz=""></span>
+              {% endif %}
+            </td>
             <td>
               <form method="post" action="/tenants/{{ tenant_id }}/scan-results/{{ result.id }}/versions">
                 <input name="version" type="number" min="1" placeholder="Version" style="padding: 0.2rem;" required />

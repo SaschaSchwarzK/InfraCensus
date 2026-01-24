@@ -20,7 +20,11 @@
       <tbody>
         {% for entry in entries %}
           <tr>
-            <td>{{ entry.created_at }}</td>
+            <td class="meta">
+              {% if entry.created_at %}
+                <span class="time-utc" data-utc="{{ entry.created_at.isoformat() }}" data-tz=""></span>
+              {% endif %}
+            </td>
             <td>
               {% set actor = user_map.get(entry.actor_user_id) %}
               {% if actor %}
