@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="card">
+    <h2>Tenant {{ tenant_name or tenant_id }} Exports</h2>
+    <p class="meta">
+      <a href="/tenants">Tenants</a> /
+      <a href="/tenants/{{ tenant_id }}/schedules">Schedules</a> /
+      Exports
+    </p>
+    {% if message %}
+      <p class="meta">{{ message }}</p>
+    {% endif %}
+    {% if error %}
+      <p class="meta">{{ error }}</p>
+    {% endif %}
+    <form method="get" action="/tenants/{{ tenant_id }}/exports" style="margin-bottom: 1rem;">
+      <label for="site-filter">Filter by site</label><br />
+      <select id="site-filter" name="site_id" style="width: 40%; padding: 0.4rem;">
+        <option value="">All sites</option>
+        {% for site in sites %}
+          <option value="{{ site.id }}" {% if site_filter and site_filter|int == site.id %}selected{% endif %}>{{ site.name }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit">Apply</button>
+    </form>
+    <h3>Run Export Now</h3>
+    <form method="post" action="/tenants/{{ tenant_id }}/exports/run" style="margin-bottom: 1rem;">
+      <div style="margin-bottom: 0.5rem;">
+        <label for="exporter-now">Exporter</label><br />
+        <select id="exporter-now" name="exporter" style="width: 40%; padding: 0.4rem;">
+          <option value="netbox">NetBox</option>
+        </select>
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        <label for="export-site-now">Site (optional)</label><br />
+        <select id="export-site-now" name="site_id" style="width: 40%; padding: 0.4rem;">
+          <option value="">All sites</option>
+          {% for site in sites %}
+            <option value="{{ site.id }}">{{ site.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button type="submit">Run Export</button>
+    </form>
+    <h3>Schedule Export</h3>
+    <form method="post" action="/tenants/{{ tenant_id }}/exports" style="margin-bottom: 1rem;">
+      <div style="margin-bottom: 0.5rem;">
+        <label for="export-name">Name</label><br />
+        <input id="export-name" name="name" type="text" style="width: 60%; padding: 0.4rem;" />
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        <label for="export-date">Start date</label><br />
+        <input id="export-date" name="start_date" type="date" required style="width: 40%; padding: 0.4rem;" />
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        <label for="export-time">Start time</label><br />
+        <input id="export-time" name="start_time" type="time" required style="width: 40%; padding: 0.4rem;" />
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        <label for="export-site">Site (optional)</label><br />
+        <select id="export-site" name="site_id" style="width: 60%; padding: 0.4rem;">
+          <option value="">All sites</option>
+          {% for site in sites %}
+            <option value="{{ site.id }}">{{ site.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        <label for="exporter">Exporter</label><br />
+        <select id="exporter" name="exporter" style="width: 60%; padding: 0.4rem;">
+          <option value="netbox">NetBox</option>
+        </select>
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        <label for="export-settings">Exporter settings (JSON, optional)</label><br />
+        <textarea id="export-settings" name="settings_json" rows="4" style="width: 80%; padding: 0.4rem;"></textarea>
+      </div>
+      <button type="submit">Schedule Export</button>
+    </form>
+    <h3>Export Schedule</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Exporter</th>
+          <th>Planned Start</th>
+          <th>Actual Start</th>
+          <th>Finish</th>
+          <th>Site</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for schedule in schedules %}
+          <tr>
+            <td>{{ schedule.name or "" }}</td>
+            <td>{{ schedule.exporter }}</td>
+            <td class="meta">
+              <span class="time-utc" data-utc="{{ schedule.scheduled_at_utc.isoformat() }}" data-tz="{{ site_tz_map.get(schedule.site_id, '') }}"></span>
+            </td>
+            <td class="meta">
+              {% if schedule.actual_start_at_utc %}
+                <span class="time-utc" data-utc="{{ schedule.actual_start_at_utc.isoformat() }}" data-tz="{{ site_tz_map.get(schedule.site_id, '') }}"></span>
+              {% endif %}
+            </td>
+            <td class="meta">
+              {% if schedule.finished_at_utc %}
+                <span class="time-utc" data-utc="{{ schedule.finished_at_utc.isoformat() }}" data-tz="{{ site_tz_map.get(schedule.site_id, '') }}"></span>
+              {% endif %}
+            </td>
+            <td>{{ site_map.get(schedule.site_id, "") if schedule.site_id else "" }}</td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="6" class="meta">No exports scheduled yet.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

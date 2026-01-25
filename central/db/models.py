@@ -46,40 +46,6 @@ class Collector(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     tenant: Mapped[Tenant] = relationship(back_populates="collectors")
-    scans: Mapped[list["ScanJob"]] = relationship(back_populates="collector")
-
-
-class ScanJob(Base):
-    __tablename__ = "scan_jobs"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    collector_id: Mapped[int] = mapped_column(ForeignKey("collectors.id"), nullable=False)
-    target: Mapped[str] = mapped_column(String(200), nullable=False)
-    status: Mapped[str] = mapped_column(String(50), default="pending")
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-
-    collector: Mapped[Collector] = relationship(back_populates="scans")
-    devices: Mapped[list["Device"]] = relationship(back_populates="scan_job")
-
-
-class Device(Base):
-    __tablename__ = "devices"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    scan_job_id: Mapped[int] = mapped_column(ForeignKey("scan_jobs.id"), nullable=False)
-    hostname: Mapped[str] = mapped_column(String(255), nullable=True)
-    ip_address: Mapped[str] = mapped_column(String(64), nullable=True)
-    manufacturer: Mapped[str] = mapped_column(String(120), nullable=True)
-    model: Mapped[str] = mapped_column(String(120), nullable=True)
-    os_version: Mapped[str] = mapped_column(String(120), nullable=True)
-    serial_number: Mapped[str] = mapped_column(String(120), nullable=True)
-    platform: Mapped[str] = mapped_column(String(100), nullable=True)
-    raw_payload: Mapped[str] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-
-    scan_job: Mapped[ScanJob] = relationship(back_populates="devices")
 
 
 class ScanTrigger(str, Enum):
@@ -383,32 +349,6 @@ class Network(Base):
     site: Mapped["Site"] = relationship(back_populates="networks")
 
 
-class ScanResult(Base):
-    __tablename__ = "scan_results"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
-    scan_job_id: Mapped[int] = mapped_column(ForeignKey("scan_jobs.id"), nullable=True)
-    label: Mapped[str] = mapped_column(String(200), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-
-    versions: Mapped[list["ScanResultVersion"]] = relationship(back_populates="scan_result")
-
-
-class ScanResultVersion(Base):
-    __tablename__ = "scan_result_versions"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    scan_result_id: Mapped[int] = mapped_column(
-        ForeignKey("scan_results.id"), nullable=False
-    )
-    version: Mapped[int] = mapped_column(Integer, nullable=False)
-    payload: Mapped[str] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-
-    scan_result: Mapped["ScanResult"] = relationship(back_populates="versions")
-
-
 class ScanSchedule(Base):
     __tablename__ = "scan_schedules"
 
@@ -423,6 +363,26 @@ class ScanSchedule(Base):
     finished_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     network_ids: Mapped[str] = mapped_column(Text, nullable=True)
     scan_types: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    tenant: Mapped["Tenant"] = relationship()
+    site: Mapped["Site"] = relationship()
+
+
+class ExportSchedule(Base):
+    __tablename__ = "export_schedules"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), nullable=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=True)
+    exporter: Mapped[str] = mapped_column(String(120), nullable=False)
+    scheduled_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    not_before_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    not_after_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    actual_start_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    settings_json: Mapped[str] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     tenant: Mapped["Tenant"] = relationship()
@@ -521,4 +481,29 @@ class AuditLog(Base):
     entity_type: Mapped[str] = mapped_column(String(100), nullable=False)
     entity_id: Mapped[int] = mapped_column(Integer, nullable=True)
     details: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class TaskFailureLog(Base):
+    __tablename__ = "task_failure_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=True)
+    task_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    exception: Mapped[str] = mapped_column(Text, nullable=True)
+    traceback: Mapped[str] = mapped_column(Text, nullable=True)
+    args: Mapped[str] = mapped_column(Text, nullable=True)
+    kwargs: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class PermanentFailure(Base):
+    __tablename__ = "permanent_failures"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=True)
+    task_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    error: Mapped[str] = mapped_column(Text, nullable=True)
+    args: Mapped[str] = mapped_column(Text, nullable=True)
+    kwargs: Mapped[str] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

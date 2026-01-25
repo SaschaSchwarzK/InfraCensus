@@ -1,0 +1,61 @@
+{
+  "schema_version": "1.0",
+  "description": "InfraCensus structured log schema for SIEM ingestion",
+  "required_fields": {
+    "ts": "RFC3339 UTC timestamp (e.g., 2026-01-21T12:34:56Z)",
+    "level": "Lowercase log level (info, warning, error)",
+    "event": "Stable event name (e.g., http.request, task.completed)",
+    "service": "Service identifier (default: infracensus)",
+    "env": "Environment (dev, staging, prod)",
+    "schema_version": "Schema version (1.0)",
+    "component": "Logger namespace (e.g., central.api.app)"
+  },
+  "optional_fields": {
+    "request_id": "Correlation ID for HTTP requests",
+    "user_id": "Authenticated user id",
+    "tenant_id": "Tenant id",
+    "collector_id": "Collector id or UUID",
+    "trace_id": "Distributed trace identifier (defaults to request id)",
+    "scan_run_id": "Scan run id",
+    "schedule_id": "Schedule id",
+    "type_id": "Schedule type id",
+    "job_id": "Job id",
+    "device_id": "Device id",
+    "observation_id": "Observation id",
+    "status_code": "HTTP status code",
+    "duration_ms": "Elapsed time in milliseconds",
+    "error": "Error message or exception string",
+    "message": "Human-readable summary"
+    ,
+    "exception_type": "Exception class name",
+    "exception_message": "Exception text",
+    "stacktrace": "Stack trace string"
+  },
+  "event_examples": [
+    "http.request",
+    "collector.enrolled",
+    "ingestion.start",
+    "ingestion.complete",
+    "parser.start",
+    "reconcile.device_created",
+    "snapshot.created",
+    "changes.significant",
+    "task.failed",
+    "task.dead_letter"
+  ],
+  "example_log": {
+    "ts": "2026-01-21T12:34:56Z",
+    "level": "info",
+    "event": "http.request",
+    "service": "infracensus",
+    "env": "prod",
+    "schema_version": "1.0",
+    "component": "central.api.app",
+    "request_id": "b5b5e8e9-7b8c-4d12-9d8c-ec2f2cf34a1f",
+    "method": "GET",
+    "path": "/collectors/jobs/poll",
+    "status_code": 200,
+    "duration_ms": 14,
+    "client_ip": "203.0.113.42"
+  }
+}

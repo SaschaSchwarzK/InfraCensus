@@ -3,6 +3,7 @@
 from central.plugins.base import ExporterPlugin, Plugin, ScannerPlugin
 from central.plugins.loader import load_plugins
 from central.plugins.registry import registry
+from central.plugins.exporters import NetBoxExporter
 from central.plugins.scanners import (
     HttpScanner,
     NetconfScanner,
@@ -13,6 +14,7 @@ from central.plugins.scanners import (
 
 __all__ = [
     "ExporterPlugin",
+    "NetBoxExporter",
     "HttpScanner",
     "NetconfScanner",
     "NetworkDiscoveryScanner",
@@ -29,3 +31,4 @@ registry.register(SnmpScanner)
 registry.register(SshScanner)
 registry.register(HttpScanner)
 registry.register(NetconfScanner)
+registry.register(NetBoxExporter)

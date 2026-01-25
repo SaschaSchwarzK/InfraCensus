@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable, Iterable, Optional, Sequence
+import json
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -17,18 +18,16 @@ from central.core.auth import highest_role
 from central.db.models import (
     AuditLog,
     Collector,
-    Device,
+    CollectorEnrollmentToken,
+    ExportSchedule,
+    InventoryDevice,
     Network,
-    ScanJob,
-    ScanResult,
-    ScanResultVersion,
     ScanSchedule,
     ScanScheduleType,
     Site,
     Tenant,
     TenantUser,
     User,
-    CollectorEnrollmentToken,
 )
 from central.db.session import get_session
 from central.core.config import settings
@@ -71,6 +70,7 @@ def _parse_csv(value: str | None) -> list[str]:
     if not value:
         return []
     return [item.strip() for item in value.split(",") if item.strip()]
+
 
 
 def _is_valid_timezone(value: str) -> bool:
@@ -138,11 +138,8 @@ def home(request: Request) -> HTMLResponse:
                 .count()
             )
             device_count = (
-                session.query(Device)
-                .join(ScanJob, ScanJob.id == Device.scan_job_id)
-                .join(Collector, Collector.id == ScanJob.collector_id)
-                .join(Tenant, Tenant.id == Collector.tenant_id)
-                .join(TenantUser, TenantUser.tenant_id == Tenant.id)
+                session.query(InventoryDevice)
+                .join(TenantUser, TenantUser.tenant_id == InventoryDevice.tenant_id)
                 .filter(TenantUser.user_id == user.id)
                 .count()
             )
@@ -990,69 +987,6 @@ def tenant_network_delete(
     )
 
 
-@router.get("/tenants/{tenant_id}/scan-results", response_class=HTMLResponse)
-def tenant_scan_results(request: Request, tenant_id: int) -> HTMLResponse:
-    user = require_tenant_role(request, tenant_id, UserRole.read_only)
-    if not isinstance(user, User):
-        return user
-
-    def fetch() -> Iterable[ScanResult]:
-        with get_session() as session:
-            query = session.query(ScanResult).filter(ScanResult.tenant_id == tenant_id)
-            label_filter = request.query_params.get("label")
-            scan_job_filter = request.query_params.get("scan_job_id")
-            if label_filter:
-                query = query.filter(ScanResult.label.ilike(f"%{label_filter}%"))
-            if scan_job_filter:
-                try:
-                    query = query.filter(ScanResult.scan_job_id == int(scan_job_filter))
-                except ValueError:
-                    pass
-            query = query.order_by(ScanResult.created_at.desc())
-            query, _, _ = _paginate_query(query, request)
-            return query.all()
-
-    def fetch_tenant() -> Iterable[Tenant]:
-        with get_session() as session:
-            return session.query(Tenant).filter(Tenant.id == tenant_id).all()
-
-    results, error = _safe_query(fetch)
-    tenants, _ = _safe_query(fetch_tenant)
-    tenant = tenants[0] if tenants else None
-    if _wants_json(request):
-        limit, offset = _pagination_params(request)
-        return JSONResponse(
-            {
-                "tenant_id": tenant_id,
-                "tenant_name": tenant.name if tenant else None,
-                "scan_results": [
-                    {
-                        "id": result.id,
-                        "label": result.label,
-                        "created_at": _format_dt(result.created_at),
-                        "scan_job_id": result.scan_job_id,
-                    }
-                    for result in results
-                ],
-                "error": error,
-                "limit": limit,
-                "offset": offset,
-            }
-        )
-    return templates.TemplateResponse(
-        "tenant_scan_results.html",
-        {
-            "request": request,
-            "results": results,
-            "tenant_id": tenant_id,
-            "tenant_name": tenant.name if tenant else None,
-            "error": error,
-            "user": user,
-            "message": request.query_params.get("message"),
-        },
-    )
-
-
 @router.get("/tenants/{tenant_id}/schedules", response_class=HTMLResponse)
 def tenant_schedules(request: Request, tenant_id: int) -> HTMLResponse:
     user = require_tenant_role(request, tenant_id, UserRole.read_only)
@@ -1621,14 +1555,6 @@ async def tenant_schedule_create(
     else:
         start_at_dt = start_at_dt.astimezone(timezone.utc)
 
-    if not network_ids:
-        if wants_json:
-            return JSONResponse({"error": "Select at least one network"}, status_code=400)
-        return _redirect_with_message(
-            f"/tenants/{tenant_id}/schedules",
-            "Select at least one network",
-        )
-
     if not scan_types:
         if wants_json:
             return JSONResponse({"error": "Select at least one scan type"}, status_code=400)
@@ -1637,8 +1563,16 @@ async def tenant_schedule_create(
             "Select at least one scan type",
         )
 
+    if not network_ids:
+        if wants_json:
+            return JSONResponse({"error": "Select at least one network"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/schedules",
+            "Select at least one network",
+        )
+
     parsed_site_id = int(site_id) if site_id else None
-    network_csv = ",".join([str(item) for item in network_ids])
+    network_csv = ",".join([str(item) for item in (network_ids or [])])
     scan_type_csv = ",".join([str(item) for item in scan_types])
 
     window_minutes = 10
@@ -1790,6 +1724,297 @@ def tenant_schedule_detail(
             "error": error,
             "user": user,
         },
+    )
+
+
+@router.get("/tenants/{tenant_id}/exports", response_class=HTMLResponse)
+def tenant_exports(request: Request, tenant_id: int) -> HTMLResponse:
+    user = require_tenant_role(request, tenant_id, UserRole.read_only)
+    if not isinstance(user, User):
+        return user
+
+    def fetch_exports() -> Iterable[ExportSchedule]:
+        with get_session() as session:
+            query = session.query(ExportSchedule).filter(ExportSchedule.tenant_id == tenant_id)
+            site_filter = request.query_params.get("site_id")
+            start_after = request.query_params.get("start_after")
+            start_before = request.query_params.get("start_before")
+            if site_filter:
+                try:
+                    query = query.filter(ExportSchedule.site_id == int(site_filter))
+                except ValueError:
+                    pass
+            if start_after:
+                query = query.filter(ExportSchedule.scheduled_at_utc >= start_after)
+            if start_before:
+                query = query.filter(ExportSchedule.scheduled_at_utc <= start_before)
+            query = query.order_by(ExportSchedule.scheduled_at_utc.asc())
+            query, _, _ = _paginate_query(query, request)
+            return query.all()
+
+    def fetch_sites() -> Iterable[Site]:
+        with get_session() as session:
+            return (
+                session.query(Site)
+                .filter(Site.tenant_id == tenant_id)
+                .order_by(Site.name)
+                .all()
+            )
+
+    def fetch_tenant() -> Iterable[Tenant]:
+        with get_session() as session:
+            return session.query(Tenant).filter(Tenant.id == tenant_id).all()
+
+    schedules, error = _safe_query(fetch_exports)
+    sites, _ = _safe_query(fetch_sites)
+    tenants, _ = _safe_query(fetch_tenant)
+    tenant = tenants[0] if tenants else None
+    site_map = {site.id: site.name for site in sites}
+    site_tz_map = {site.id: site.timezone for site in sites}
+    if _wants_json(request):
+        limit, offset = _pagination_params(request)
+        return JSONResponse(
+            {
+                "tenant_id": tenant_id,
+                "tenant_name": tenant.name if tenant else None,
+                "exports": [
+                    {
+                        "id": schedule.id,
+                        "name": schedule.name,
+                        "exporter": schedule.exporter,
+                        "scheduled_at_utc": _format_dt(schedule.scheduled_at_utc),
+                        "not_before_utc": _format_dt(schedule.not_before_utc),
+                        "not_after_utc": _format_dt(schedule.not_after_utc),
+                        "actual_start_at_utc": _format_dt(schedule.actual_start_at_utc),
+                        "finished_at_utc": _format_dt(schedule.finished_at_utc),
+                        "site_id": schedule.site_id,
+                        "site_name": site_map.get(schedule.site_id),
+                        "site_timezone": site_tz_map.get(schedule.site_id),
+                        "settings_json": schedule.settings_json,
+                        "created_at_utc": _format_dt(schedule.created_at),
+                    }
+                    for schedule in schedules
+                ],
+                "sites": [{"id": site.id, "name": site.name} for site in sites],
+                "error": error,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+    return templates.TemplateResponse(
+        "tenant_exports.html",
+        {
+            "request": request,
+            "tenant_id": tenant_id,
+            "tenant_name": tenant.name if tenant else None,
+            "schedules": schedules,
+            "sites": sites,
+            "site_map": site_map,
+            "site_tz_map": site_tz_map,
+            "error": error,
+            "message": request.query_params.get("message"),
+            "user": user,
+        },
+    )
+
+
+@router.post("/tenants/{tenant_id}/exports", response_model=None)
+async def tenant_export_schedule_create(
+    request: Request,
+    tenant_id: int,
+    name: str | None = Form(None),
+    start_date: str | None = Form(None),
+    start_time: str | None = Form(None),
+    site_id: str | None = Form(None),
+    exporter: str | None = Form(None),
+    settings_json: str | None = Form(None),
+):
+    user = require_tenant_role(request, tenant_id, UserRole.read_write)
+    if not isinstance(user, User):
+        return user
+    wants_json = _wants_json(request)
+    payload = None
+    if not start_date or not start_time:
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = None
+    if payload:
+        name = payload.get("name") if payload else name
+        start_at = payload.get("start_at")
+        site_id = str(payload.get("site_id")) if payload and payload.get("site_id") is not None else site_id
+        exporter = payload.get("exporter") if payload else exporter
+        if isinstance(payload, dict) and payload.get("settings"):
+            settings_json = json.dumps(payload.get("settings"))
+        else:
+            settings_json = payload.get("settings_json") if payload else settings_json
+    else:
+        start_at = None
+
+    if start_at:
+        try:
+            start_at_dt = datetime.fromisoformat(start_at)
+        except ValueError:
+            start_at_dt = None
+    else:
+        if not start_date or not start_time:
+            start_at_dt = None
+        else:
+            try:
+                start_at_dt = datetime.fromisoformat(f"{start_date}T{start_time}")
+            except ValueError:
+                start_at_dt = None
+
+    if start_at_dt is None:
+        if wants_json:
+            return JSONResponse({"error": "Start date/time is required"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/exports",
+            "Start date/time is required",
+        )
+    if start_at_dt.tzinfo is None:
+        start_at_dt = start_at_dt.replace(tzinfo=timezone.utc)
+    else:
+        start_at_dt = start_at_dt.astimezone(timezone.utc)
+
+    exporter = (exporter or "").strip()
+    if not exporter:
+        if wants_json:
+            return JSONResponse({"error": "Exporter is required"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/exports",
+            "Exporter is required",
+        )
+
+    parsed_site_id = int(site_id) if site_id else None
+    normalized_settings = None
+    if settings_json:
+        try:
+            parsed_settings = json.loads(settings_json)
+            normalized_settings = json.dumps(parsed_settings, sort_keys=True)
+        except json.JSONDecodeError:
+            if wants_json:
+                return JSONResponse({"error": "Invalid settings JSON"}, status_code=400)
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/exports",
+                "Invalid settings JSON",
+            )
+
+    window_minutes = 10
+    not_before = start_at_dt
+    not_after = start_at_dt + timedelta(minutes=window_minutes)
+    with get_session() as session:
+        schedule = ExportSchedule(
+            tenant_id=tenant_id,
+            site_id=parsed_site_id,
+            name=(name or "").strip() or None,
+            exporter=exporter,
+            scheduled_at_utc=start_at_dt,
+            not_before_utc=not_before,
+            not_after_utc=not_after,
+            settings_json=normalized_settings,
+        )
+        session.add(schedule)
+        session.flush()
+        log_audit(
+            actor_user_id=user.id,
+            action="tenant.export.schedule.create",
+            entity_type="export_schedule",
+            entity_id=schedule.id,
+            details={"exporter": exporter, "scheduled_at_utc": _format_dt(schedule.scheduled_at_utc)},
+            session=session,
+        )
+
+    if wants_json:
+        return JSONResponse(
+            {
+                "status": "created",
+                "export_schedule_id": schedule.id,
+                "scheduled_at_utc": _format_dt(schedule.scheduled_at_utc),
+                "not_before_utc": _format_dt(schedule.not_before_utc),
+                "not_after_utc": _format_dt(schedule.not_after_utc),
+            }
+        )
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/exports",
+        "Export scheduled",
+    )
+
+
+@router.post("/tenants/{tenant_id}/exports/run", response_model=None)
+async def tenant_export_run(
+    request: Request,
+    tenant_id: int,
+    exporter: str | None = Form(None),
+    export_schedule_id: str | None = Form(None),
+    site_id: str | None = Form(None),
+    settings_json: str | None = Form(None),
+):
+    user = require_tenant_role(request, tenant_id, UserRole.read_write)
+    if not isinstance(user, User):
+        return user
+    wants_json = _wants_json(request)
+    if not exporter:
+        try:
+            payload = await request.json()
+            exporter = payload.get("exporter") if payload else None
+            export_schedule_id = payload.get("export_schedule_id") if payload else export_schedule_id
+            site_id = payload.get("site_id") if payload else site_id
+            settings_json = payload.get("settings_json") if payload else settings_json
+            if isinstance(payload, dict) and payload.get("settings"):
+                settings_json = json.dumps(payload.get("settings"))
+        except Exception:
+            exporter = None
+    exporter = (exporter or "netbox").strip()
+    if not exporter:
+        if wants_json:
+            return JSONResponse({"error": "Exporter is required"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/schedules",
+            "Exporter is required",
+        )
+    parsed_schedule_id = int(export_schedule_id) if export_schedule_id else None
+    parsed_site_id = int(site_id) if site_id else None
+    parsed_settings = None
+    if settings_json:
+        try:
+            parsed_settings = json.loads(settings_json)
+            settings_json = json.dumps(parsed_settings, sort_keys=True)
+        except json.JSONDecodeError:
+            if wants_json:
+                return JSONResponse({"error": "Invalid settings JSON"}, status_code=400)
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/exports",
+                "Invalid settings JSON",
+            )
+    payload = {
+        "tenant_id": tenant_id,
+        "site_id": parsed_site_id,
+        "export_schedule_id": parsed_schedule_id,
+        "requested_by_user_id": user.id,
+    }
+    from central.workers.exports import export_inventory_task
+
+    export_inventory_task.delay(exporter, payload, parsed_settings, None)
+    with get_session() as session:
+        log_audit(
+            actor_user_id=user.id,
+            action="tenant.export.run",
+            entity_type="tenant",
+            entity_id=tenant_id,
+            details={
+                "exporter": exporter,
+                "export_schedule_id": parsed_schedule_id,
+                "site_id": parsed_site_id,
+            },
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse({"status": "queued", "exporter": exporter})
+    redirect_target = f"/tenants/{tenant_id}/exports"
+    return _redirect_with_message(
+        redirect_target,
+        f"Export queued: {exporter}",
     )
 
 
@@ -2010,118 +2235,6 @@ async def tenant_schedule_type_update_status(
         "Scan type updated",
     )
 
-@router.post("/tenants/{tenant_id}/scan-results", response_model=None)
-async def tenant_scan_result_create(
-    request: Request,
-    tenant_id: int,
-    label: str | None = Form(None),
-):
-    user = require_tenant_role(request, tenant_id, UserRole.read_write)
-    if not isinstance(user, User):
-        return user
-    wants_json = "application/json" in request.headers.get("accept", "")
-    if not label:
-        try:
-            payload = await request.json()
-            label = payload.get("label") if payload else None
-        except Exception:
-            label = None
-    if not label:
-        if wants_json:
-            return JSONResponse({"error": "Label is required"}, status_code=400)
-        return _redirect_with_message(
-            f"/tenants/{tenant_id}/scan-results",
-            "Label is required",
-        )
-    with get_session() as session:
-        result = ScanResult(tenant_id=tenant_id, label=label.strip())
-        session.add(result)
-        session.flush()
-        log_audit(
-            actor_user_id=user.id,
-            action="tenant.scan_result.create",
-            entity_type="scan_result",
-            entity_id=result.id,
-            details={"label": result.label},
-            session=session,
-        )
-    if wants_json:
-        return JSONResponse(
-            {"status": "created", "scan_result_id": result.id, "label": result.label}
-        )
-    return _redirect_with_message(
-        f"/tenants/{tenant_id}/scan-results",
-        f"Scan result {label} created",
-    )
-
-
-@router.post("/tenants/{tenant_id}/scan-results/{result_id}/versions", response_model=None)
-async def tenant_scan_result_add_version(
-    request: Request,
-    tenant_id: int,
-    result_id: int,
-    version: int | None = Form(None),
-    payload: str | None = Form(None),
-):
-    user = require_tenant_role(request, tenant_id, UserRole.read_write)
-    if not isinstance(user, User):
-        return user
-    wants_json = "application/json" in request.headers.get("accept", "")
-    if version is None:
-        try:
-            payload_json = await request.json()
-            version = payload_json.get("version") if payload_json else None
-            payload = payload_json.get("payload") if payload_json else payload
-        except Exception:
-            version = None
-    if version is None:
-        if wants_json:
-            return JSONResponse({"error": "Version is required"}, status_code=400)
-        return _redirect_with_message(
-            f"/tenants/{tenant_id}/scan-results",
-            "Version is required",
-        )
-    with get_session() as session:
-        result = (
-            session.query(ScanResult)
-            .filter(ScanResult.id == result_id, ScanResult.tenant_id == tenant_id)
-            .one_or_none()
-        )
-        if not result:
-            if wants_json:
-                return JSONResponse({"error": "Scan result not found"}, status_code=404)
-            return _redirect_with_message(
-                f"/tenants/{tenant_id}/scan-results",
-                "Scan result not found",
-            )
-        entry = ScanResultVersion(
-            scan_result_id=result_id,
-            version=version,
-            payload=(payload or "").strip() or None,
-        )
-        session.add(entry)
-        session.flush()
-        log_audit(
-            actor_user_id=user.id,
-            action="tenant.scan_result.version.create",
-            entity_type="scan_result_version",
-            entity_id=entry.id,
-            details={"result_id": result_id, "version": version},
-            session=session,
-        )
-    if wants_json:
-        return JSONResponse(
-            {
-                "status": "created",
-                "scan_result_version_id": entry.id,
-                "result_id": result_id,
-                "version": version,
-            }
-        )
-    return _redirect_with_message(
-        f"/tenants/{tenant_id}/scan-results",
-        "Scan result version added",
-    )
 @router.post("/tenants/{tenant_id}/users", response_model=None)
 async def tenant_user_add(
     request: Request,
