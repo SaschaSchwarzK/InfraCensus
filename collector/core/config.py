@@ -57,10 +57,15 @@ class CollectorConfig:
     collector_version: str
     collector_build: str
     clock_skew_warn_seconds: int
+    vault_addr: str | None
+    vault_token: str | None
+    vault_kv_mount: str
+    vault_namespace: str | None
+    vault_cache_ttl_seconds: int
 
     @classmethod
     def from_env(cls) -> "CollectorConfig":
-        central_url = os.getenv("CENTRAL_URL", "https://central.infracensus.local")
+        central_url = _resolve_central_url()
         if not central_url.startswith(("http://", "https://")):
             raise ValueError("CENTRAL_URL must start with http:// or https://")
         enrollment_token = os.getenv("ENROLLMENT_TOKEN")
@@ -87,6 +92,11 @@ class CollectorConfig:
         collector_version = os.getenv("COLLECTOR_VERSION", "unknown")
         collector_build = os.getenv("COLLECTOR_BUILD", "unknown")
         clock_skew_warn_seconds = int(os.getenv("CLOCK_SKEW_WARN_SECONDS", "60"))
+        vault_addr = os.getenv("VAULT_ADDR")
+        vault_token = os.getenv("VAULT_TOKEN")
+        vault_kv_mount = os.getenv("VAULT_KV_MOUNT", "secret")
+        vault_namespace = os.getenv("VAULT_NAMESPACE")
+        vault_cache_ttl_seconds = int(os.getenv("VAULT_CACHE_TTL_SECONDS", "300"))
         return cls(
             central_url=central_url,
             enrollment_token=enrollment_token,
@@ -113,4 +123,23 @@ class CollectorConfig:
             collector_version=collector_version,
             collector_build=collector_build,
             clock_skew_warn_seconds=clock_skew_warn_seconds,
+            vault_addr=vault_addr,
+            vault_token=vault_token,
+            vault_kv_mount=vault_kv_mount,
+            vault_namespace=vault_namespace,
+            vault_cache_ttl_seconds=vault_cache_ttl_seconds,
         )
+
+
+def _resolve_central_url() -> str:
+    explicit = os.getenv("CENTRAL_URL")
+    if explicit:
+        return explicit
+    host = os.getenv("CENTRAL_SERVICE_HOST")
+    if not host:
+        return "https://central.infracensus.local"
+    scheme = os.getenv("CENTRAL_SERVICE_SCHEME", "https")
+    port = os.getenv("CENTRAL_SERVICE_PORT")
+    if port:
+        return f"{scheme}://{host}:{port}"
+    return f"{scheme}://{host}"

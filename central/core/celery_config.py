@@ -44,6 +44,7 @@ celery_app.conf.update(
         "central.workers.maintenance",
         "central.workers.exports",
         "central.workers.scheduler",
+        "central.workers.rotation",
     ),
 )
 
@@ -73,5 +74,10 @@ celery_app.conf.beat_schedule = {
         'task': 'workers.dispatch_export_schedules',
         'schedule': crontab(minute="*"),
         'args': (100,),
+    },
+    'rotate-credentials': {
+        'task': 'workers.rotate_credentials',
+        'schedule': crontab(hour=3, minute=0),
+        'args': (),
     },
 }

@@ -48,6 +48,23 @@ class Collector(Base):
     tenant: Mapped[Tenant] = relationship(back_populates="collectors")
 
 
+class CollectorAffinity(Base):
+    __tablename__ = "collector_affinities"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    collector_id: Mapped[int] = mapped_column(ForeignKey("collectors.id"), nullable=False)
+    network_id: Mapped[int] = mapped_column(ForeignKey("networks.id"), nullable=True)
+    subnet_cidr: Mapped[str] = mapped_column(String(64), nullable=True)
+    scan_type: Mapped[str] = mapped_column(String(100), nullable=True)
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    tenant: Mapped["Tenant"] = relationship()
+    collector: Mapped["Collector"] = relationship()
+    network: Mapped["Network"] = relationship()
+
+
 class ScanTrigger(str, Enum):
     schedule = "schedule"
     manual = "manual"
@@ -349,6 +366,20 @@ class Network(Base):
     site: Mapped["Site"] = relationship(back_populates="networks")
 
 
+class NetworkRateLimit(Base):
+    __tablename__ = "network_rate_limits"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    network_id: Mapped[int] = mapped_column(ForeignKey("networks.id"), nullable=False)
+    window_start_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    tenant: Mapped["Tenant"] = relationship()
+    network: Mapped["Network"] = relationship()
+
+
 class ScanSchedule(Base):
     __tablename__ = "scan_schedules"
 
@@ -389,6 +420,36 @@ class ExportSchedule(Base):
     site: Mapped["Site"] = relationship()
 
 
+class CredentialSet(Base):
+    __tablename__ = "credential_sets"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    protocol: Mapped[str] = mapped_column(String(50), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=True)
+    vault_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    tenant: Mapped["Tenant"] = relationship()
+
+
+class CredentialAssignment(Base):
+    __tablename__ = "credential_assignments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    subnet_cidr: Mapped[str] = mapped_column(String(64), nullable=False)
+    protocol: Mapped[str] = mapped_column(String(50), nullable=False)
+    credential_set_id: Mapped[int] = mapped_column(
+        ForeignKey("credential_sets.id"), nullable=False
+    )
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    tenant: Mapped["Tenant"] = relationship()
+    credential_set: Mapped["CredentialSet"] = relationship()
+
+
 class ScanScheduleType(Base):
     __tablename__ = "scan_schedule_types"
 
@@ -400,11 +461,17 @@ class ScanScheduleType(Base):
     scheduled_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     not_before_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     not_after_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    assigned_collector_id: Mapped[int] = mapped_column(
+        ForeignKey("collectors.id"), nullable=True
+    )
+    assigned_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     actual_start_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     schedule: Mapped["ScanSchedule"] = relationship()
+    assigned_collector: Mapped["Collector"] = relationship()
 
 
 class CollectorCertificate(Base):
@@ -440,6 +507,7 @@ class CollectorEnrollmentToken(Base):
 
 class UserRole(str, Enum):
     read_only = "ro"
+    scan_operator = "scan_operator"
     read_write = "rw"
     user_admin = "user_admin"
 
@@ -452,6 +520,7 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(255), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=True)
     is_superadmin: Mapped[bool] = mapped_column(default=False)
+    is_auditor: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     tenants: Mapped[list["TenantUser"]] = relationship(back_populates="user")

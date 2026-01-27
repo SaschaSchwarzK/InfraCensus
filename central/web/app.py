@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable, Iterable, Optional, Sequence
+import ipaddress
 import json
 import hashlib
 import secrets
@@ -19,6 +20,8 @@ from central.db.models import (
     AuditLog,
     Collector,
     CollectorEnrollmentToken,
+    CredentialAssignment,
+    CredentialSet,
     ExportSchedule,
     InventoryDevice,
     Network,
@@ -33,6 +36,7 @@ from central.db.session import get_session
 from central.core.config import settings
 from central.web.auth import (
     allow_collector_token,
+    allow_api_key_scope,
     authenticate,
     hash_password,
     login_user,
@@ -46,6 +50,8 @@ from central.db.models import UserRole
 
 templates = Jinja2Templates(directory="central/web/templates")
 router = APIRouter()
+
+_ALLOWED_CREDENTIAL_PROTOCOLS = {"snmp", "ssh", "http"}
 
 
 def _safe_query(fetch: Callable[[], Iterable[Any]]) -> tuple[list[Any], Optional[str]]:
@@ -1508,10 +1514,13 @@ async def tenant_schedule_create(
     site_id: str | None = Form(None),
     network_ids: list[str] = Form(None),
     scan_types: list[str] = Form(None),
+    priority: str | None = Form(None),
 ):
-    user = require_tenant_role(request, tenant_id, UserRole.read_write)
-    if not isinstance(user, User):
-        return user
+    user = None
+    if not allow_api_key_scope(request, "schedule:write"):
+        user = require_tenant_role(request, tenant_id, UserRole.scan_operator)
+        if not isinstance(user, User):
+            return user
 
     wants_json = _wants_json(request)
     payload = None
@@ -1526,6 +1535,7 @@ async def tenant_schedule_create(
         site_id = str(payload.get("site_id")) if payload and payload.get("site_id") is not None else site_id
         network_ids = payload.get("network_ids") if payload else network_ids
         scan_types = payload.get("scan_types") if payload else scan_types
+        priority = str(payload.get("priority")) if payload and payload.get("priority") is not None else priority
     else:
         start_at = None
 
@@ -1572,6 +1582,10 @@ async def tenant_schedule_create(
         )
 
     parsed_site_id = int(site_id) if site_id else None
+    try:
+        parsed_priority = int(priority) if priority is not None else 0
+    except ValueError:
+        parsed_priority = 0
     network_csv = ",".join([str(item) for item in (network_ids or [])])
     scan_type_csv = ",".join([str(item) for item in scan_types])
 
@@ -1599,10 +1613,11 @@ async def tenant_schedule_create(
                     scheduled_at_utc=start_at_dt,
                     not_before_utc=not_before,
                     not_after_utc=not_after,
+                    priority=parsed_priority,
                 )
             )
         log_audit(
-            actor_user_id=user.id,
+            actor_user_id=user.id if user else None,
             action="tenant.schedule.create",
             entity_type="scan_schedule",
             entity_id=schedule.id,
@@ -1818,6 +1833,481 @@ def tenant_exports(request: Request, tenant_id: int) -> HTMLResponse:
     )
 
 
+@router.get("/tenants/{tenant_id}/credentials", response_class=HTMLResponse)
+def tenant_credentials(request: Request, tenant_id: int) -> HTMLResponse:
+    user = require_tenant_role(request, tenant_id, UserRole.user_admin)
+    if not isinstance(user, User):
+        return user
+
+    def fetch_sets() -> Iterable[CredentialSet]:
+        with get_session() as session:
+            return (
+                session.query(CredentialSet)
+                .filter(CredentialSet.tenant_id == tenant_id)
+                .order_by(CredentialSet.created_at.desc())
+                .all()
+            )
+
+    def fetch_assignments() -> Iterable[CredentialAssignment]:
+        with get_session() as session:
+            return (
+                session.query(CredentialAssignment)
+                .filter(CredentialAssignment.tenant_id == tenant_id)
+                .order_by(CredentialAssignment.priority.desc())
+                .all()
+            )
+
+    def fetch_tenant() -> Iterable[Tenant]:
+        with get_session() as session:
+            return session.query(Tenant).filter(Tenant.id == tenant_id).all()
+
+    sets, error = _safe_query(fetch_sets)
+    assignments, _ = _safe_query(fetch_assignments)
+    tenants, _ = _safe_query(fetch_tenant)
+    tenant = tenants[0] if tenants else None
+    set_map = {entry.id: entry.name or f"set-{entry.id}" for entry in sets}
+    if _wants_json(request):
+        return JSONResponse(
+            {
+                "tenant_id": tenant_id,
+                "credential_sets": [
+                    {
+                        "id": entry.id,
+                        "name": entry.name,
+                        "protocol": entry.protocol,
+                        "vault_index": entry.vault_index,
+                        "created_at_utc": _format_dt(entry.created_at),
+                    }
+                    for entry in sets
+                ],
+                "assignments": [
+                    {
+                        "id": entry.id,
+                        "subnet_cidr": entry.subnet_cidr,
+                        "protocol": entry.protocol,
+                        "credential_set_id": entry.credential_set_id,
+                        "priority": entry.priority,
+                        "created_at_utc": _format_dt(entry.created_at),
+                    }
+                    for entry in assignments
+                ],
+                "error": error,
+            }
+        )
+    return templates.TemplateResponse(
+        "tenant_credentials.html",
+        {
+            "request": request,
+            "tenant_id": tenant_id,
+            "tenant_name": tenant.name if tenant else None,
+            "credential_sets": sets,
+            "credential_assignments": assignments,
+            "credential_set_map": set_map,
+            "error": error,
+            "message": request.query_params.get("message"),
+            "user": user,
+        },
+    )
+
+
+@router.post("/tenants/{tenant_id}/credentials/sets", response_model=None)
+async def tenant_credential_set_create(
+    request: Request,
+    tenant_id: int,
+    name: str | None = Form(None),
+    protocol: str | None = Form(None),
+    vault_index: str | None = Form(None),
+):
+    user = require_tenant_role(request, tenant_id, UserRole.user_admin)
+    if not isinstance(user, User):
+        return user
+    wants_json = _wants_json(request)
+    if not protocol:
+        try:
+            payload = await request.json()
+            name = payload.get("name") if payload else name
+            protocol = payload.get("protocol") if payload else protocol
+            vault_index = str(payload.get("vault_index")) if payload else vault_index
+        except Exception:
+            protocol = None
+    if not protocol:
+        if wants_json:
+            return JSONResponse({"error": "Protocol is required"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/credentials",
+            "Protocol is required",
+        )
+    try:
+        parsed_index = int(vault_index) if vault_index is not None else 0
+    except ValueError:
+        if wants_json:
+            return JSONResponse({"error": "Invalid vault_index"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/credentials",
+            "Invalid vault index",
+        )
+    with get_session() as session:
+        entry = CredentialSet(
+            tenant_id=tenant_id,
+            name=(name or "").strip() or None,
+            protocol=protocol.strip().lower(),
+            vault_index=parsed_index,
+        )
+        session.add(entry)
+        session.flush()
+        log_audit(
+            actor_user_id=user.id,
+            action="tenant.credential_set.create",
+            entity_type="credential_set",
+            entity_id=entry.id,
+            details={"protocol": entry.protocol, "vault_index": entry.vault_index},
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse({"status": "created", "credential_set_id": entry.id})
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/credentials",
+        "Credential set created",
+    )
+
+
+@router.post("/tenants/{tenant_id}/credentials/assignments", response_model=None)
+async def tenant_credential_assignment_create(
+    request: Request,
+    tenant_id: int,
+    subnet_cidr: str | None = Form(None),
+    protocol: str | None = Form(None),
+    credential_set_id: str | None = Form(None),
+    priority: str | None = Form(None),
+):
+    user = require_tenant_role(request, tenant_id, UserRole.user_admin)
+    if not isinstance(user, User):
+        return user
+    wants_json = _wants_json(request)
+    if not subnet_cidr or not protocol or not credential_set_id:
+        try:
+            payload = await request.json()
+            subnet_cidr = payload.get("subnet_cidr") if payload else subnet_cidr
+            protocol = payload.get("protocol") if payload else protocol
+            credential_set_id = str(payload.get("credential_set_id")) if payload else credential_set_id
+            priority = str(payload.get("priority")) if payload else priority
+        except Exception:
+            subnet_cidr = subnet_cidr
+    if not subnet_cidr or not protocol or not credential_set_id:
+        if wants_json:
+            return JSONResponse({"error": "Subnet, protocol, and credential set are required"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/credentials",
+            "Subnet, protocol, and credential set are required",
+        )
+    if protocol.strip().lower() not in _ALLOWED_CREDENTIAL_PROTOCOLS:
+        if wants_json:
+            return JSONResponse({"error": "Invalid protocol"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/credentials",
+            "Invalid protocol",
+        )
+    try:
+        ipaddress.ip_network(subnet_cidr.strip(), strict=False)
+    except ValueError:
+        if wants_json:
+            return JSONResponse({"error": "Invalid subnet CIDR"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/credentials",
+            "Invalid subnet CIDR",
+        )
+    try:
+        parsed_set = int(credential_set_id)
+        parsed_priority = int(priority) if priority is not None else 0
+    except ValueError:
+        if wants_json:
+            return JSONResponse({"error": "Invalid credential_set_id or priority"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/credentials",
+            "Invalid credential set or priority",
+        )
+    with get_session() as session:
+        entry = CredentialAssignment(
+            tenant_id=tenant_id,
+            subnet_cidr=subnet_cidr.strip(),
+            protocol=protocol.strip().lower(),
+            credential_set_id=parsed_set,
+            priority=parsed_priority,
+        )
+        session.add(entry)
+        session.flush()
+        log_audit(
+            actor_user_id=user.id,
+            action="tenant.credential_assignment.create",
+            entity_type="credential_assignment",
+            entity_id=entry.id,
+            details={
+                "subnet_cidr": entry.subnet_cidr,
+                "protocol": entry.protocol,
+                "credential_set_id": entry.credential_set_id,
+                "priority": entry.priority,
+            },
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse({"status": "created", "assignment_id": entry.id})
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/credentials",
+        "Credential assignment created",
+    )
+
+
+@router.post("/tenants/{tenant_id}/credentials/sets/{set_id}/update", response_model=None)
+async def tenant_credential_set_update(
+    request: Request,
+    tenant_id: int,
+    set_id: int,
+    name: str | None = Form(None),
+    vault_index: str | None = Form(None),
+):
+    user = require_tenant_role(request, tenant_id, UserRole.user_admin)
+    if not isinstance(user, User):
+        return user
+    wants_json = _wants_json(request)
+    if name is None and vault_index is None:
+        try:
+            payload = await request.json()
+            name = payload.get("name") if payload else name
+            vault_index = str(payload.get("vault_index")) if payload else vault_index
+        except Exception:
+            name = None
+    try:
+        parsed_index = int(vault_index) if vault_index is not None else None
+    except ValueError:
+        if wants_json:
+            return JSONResponse({"error": "Invalid vault_index"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/credentials",
+            "Invalid vault index",
+        )
+    with get_session() as session:
+        entry = (
+            session.query(CredentialSet)
+            .filter(CredentialSet.id == set_id, CredentialSet.tenant_id == tenant_id)
+            .one_or_none()
+        )
+        if not entry:
+            if wants_json:
+                return JSONResponse({"error": "Credential set not found"}, status_code=404)
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/credentials",
+                "Credential set not found",
+            )
+        if name is not None:
+            entry.name = name.strip() or None
+        if parsed_index is not None:
+            entry.vault_index = parsed_index
+        log_audit(
+            actor_user_id=user.id,
+            action="tenant.credential_set.update",
+            entity_type="credential_set",
+            entity_id=entry.id,
+            details={"name": entry.name, "vault_index": entry.vault_index},
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse({"status": "updated", "credential_set_id": set_id})
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/credentials",
+        "Credential set updated",
+    )
+
+
+@router.post("/tenants/{tenant_id}/credentials/sets/{set_id}/delete", response_model=None)
+async def tenant_credential_set_delete(
+    request: Request,
+    tenant_id: int,
+    set_id: int,
+):
+    user = require_tenant_role(request, tenant_id, UserRole.user_admin)
+    if not isinstance(user, User):
+        return user
+    wants_json = _wants_json(request)
+    with get_session() as session:
+        entry = (
+            session.query(CredentialSet)
+            .filter(CredentialSet.id == set_id, CredentialSet.tenant_id == tenant_id)
+            .one_or_none()
+        )
+        if not entry:
+            if wants_json:
+                return JSONResponse({"error": "Credential set not found"}, status_code=404)
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/credentials",
+                "Credential set not found",
+            )
+        assignment_count = (
+            session.query(CredentialAssignment)
+            .filter(CredentialAssignment.credential_set_id == entry.id)
+            .count()
+        )
+        if assignment_count:
+            if wants_json:
+                return JSONResponse({"error": "Credential set is in use"}, status_code=409)
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/credentials",
+                "Credential set is in use",
+            )
+        session.delete(entry)
+        log_audit(
+            actor_user_id=user.id,
+            action="tenant.credential_set.delete",
+            entity_type="credential_set",
+            entity_id=entry.id,
+            details={"name": entry.name},
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse({"status": "deleted", "credential_set_id": set_id})
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/credentials",
+        "Credential set deleted",
+    )
+
+
+@router.post(
+    "/tenants/{tenant_id}/credentials/assignments/{assignment_id}/update",
+    response_model=None,
+)
+async def tenant_credential_assignment_update(
+    request: Request,
+    tenant_id: int,
+    assignment_id: int,
+    subnet_cidr: str | None = Form(None),
+    protocol: str | None = Form(None),
+    credential_set_id: str | None = Form(None),
+    priority: str | None = Form(None),
+):
+    user = require_tenant_role(request, tenant_id, UserRole.user_admin)
+    if not isinstance(user, User):
+        return user
+    wants_json = _wants_json(request)
+    if subnet_cidr is None and protocol is None and credential_set_id is None and priority is None:
+        try:
+            payload = await request.json()
+            subnet_cidr = payload.get("subnet_cidr") if payload else subnet_cidr
+            protocol = payload.get("protocol") if payload else protocol
+            credential_set_id = str(payload.get("credential_set_id")) if payload else credential_set_id
+            priority = str(payload.get("priority")) if payload else priority
+        except Exception:
+            priority = None
+    if protocol is not None and protocol.strip().lower() not in _ALLOWED_CREDENTIAL_PROTOCOLS:
+        if wants_json:
+            return JSONResponse({"error": "Invalid protocol"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/credentials",
+            "Invalid protocol",
+        )
+    if subnet_cidr is not None:
+        try:
+            ipaddress.ip_network(subnet_cidr.strip(), strict=False)
+        except ValueError:
+            if wants_json:
+                return JSONResponse({"error": "Invalid subnet CIDR"}, status_code=400)
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/credentials",
+                "Invalid subnet CIDR",
+            )
+    try:
+        parsed_set_id = int(credential_set_id) if credential_set_id is not None else None
+        parsed_priority = int(priority) if priority is not None else None
+    except ValueError:
+        if wants_json:
+            return JSONResponse({"error": "Invalid credential_set_id or priority"}, status_code=400)
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/credentials",
+            "Invalid credential set or priority",
+        )
+    with get_session() as session:
+        entry = (
+            session.query(CredentialAssignment)
+            .filter(CredentialAssignment.id == assignment_id, CredentialAssignment.tenant_id == tenant_id)
+            .one_or_none()
+        )
+        if not entry:
+            if wants_json:
+                return JSONResponse({"error": "Assignment not found"}, status_code=404)
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/credentials",
+                "Assignment not found",
+            )
+        if subnet_cidr is not None:
+            entry.subnet_cidr = subnet_cidr.strip()
+        if protocol is not None:
+            entry.protocol = protocol.strip().lower()
+        if parsed_set_id is not None:
+            entry.credential_set_id = parsed_set_id
+        if parsed_priority is not None:
+            entry.priority = parsed_priority
+        log_audit(
+            actor_user_id=user.id,
+            action="tenant.credential_assignment.update",
+            entity_type="credential_assignment",
+            entity_id=entry.id,
+            details={
+                "subnet_cidr": entry.subnet_cidr,
+                "protocol": entry.protocol,
+                "credential_set_id": entry.credential_set_id,
+                "priority": entry.priority,
+            },
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse({"status": "updated", "assignment_id": assignment_id})
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/credentials",
+        "Assignment updated",
+    )
+
+
+@router.post(
+    "/tenants/{tenant_id}/credentials/assignments/{assignment_id}/delete",
+    response_model=None,
+)
+async def tenant_credential_assignment_delete(
+    request: Request,
+    tenant_id: int,
+    assignment_id: int,
+):
+    user = require_tenant_role(request, tenant_id, UserRole.user_admin)
+    if not isinstance(user, User):
+        return user
+    wants_json = _wants_json(request)
+    with get_session() as session:
+        entry = (
+            session.query(CredentialAssignment)
+            .filter(CredentialAssignment.id == assignment_id, CredentialAssignment.tenant_id == tenant_id)
+            .one_or_none()
+        )
+        if not entry:
+            if wants_json:
+                return JSONResponse({"error": "Assignment not found"}, status_code=404)
+            return _redirect_with_message(
+                f"/tenants/{tenant_id}/credentials",
+                "Assignment not found",
+            )
+        session.delete(entry)
+        log_audit(
+            actor_user_id=user.id,
+            action="tenant.credential_assignment.delete",
+            entity_type="credential_assignment",
+            entity_id=entry.id,
+            details={"subnet_cidr": entry.subnet_cidr},
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse({"status": "deleted", "assignment_id": assignment_id})
+    return _redirect_with_message(
+        f"/tenants/{tenant_id}/credentials",
+        "Assignment deleted",
+    )
+
+
 @router.post("/tenants/{tenant_id}/exports", response_model=None)
 async def tenant_export_schedule_create(
     request: Request,
@@ -1829,9 +2319,11 @@ async def tenant_export_schedule_create(
     exporter: str | None = Form(None),
     settings_json: str | None = Form(None),
 ):
-    user = require_tenant_role(request, tenant_id, UserRole.read_write)
-    if not isinstance(user, User):
-        return user
+    user = None
+    if not allow_api_key_scope(request, "export:schedule"):
+        user = require_tenant_role(request, tenant_id, UserRole.scan_operator)
+        if not isinstance(user, User):
+            return user
     wants_json = _wants_json(request)
     payload = None
     if not start_date or not start_time:
@@ -1917,7 +2409,7 @@ async def tenant_export_schedule_create(
         session.add(schedule)
         session.flush()
         log_audit(
-            actor_user_id=user.id,
+            actor_user_id=user.id if user else None,
             action="tenant.export.schedule.create",
             entity_type="export_schedule",
             entity_id=schedule.id,
@@ -1950,9 +2442,11 @@ async def tenant_export_run(
     site_id: str | None = Form(None),
     settings_json: str | None = Form(None),
 ):
-    user = require_tenant_role(request, tenant_id, UserRole.read_write)
-    if not isinstance(user, User):
-        return user
+    user = None
+    if not allow_api_key_scope(request, "export:run"):
+        user = require_tenant_role(request, tenant_id, UserRole.scan_operator)
+        if not isinstance(user, User):
+            return user
     wants_json = _wants_json(request)
     if not exporter:
         try:
@@ -1991,14 +2485,14 @@ async def tenant_export_run(
         "tenant_id": tenant_id,
         "site_id": parsed_site_id,
         "export_schedule_id": parsed_schedule_id,
-        "requested_by_user_id": user.id,
+        "requested_by_user_id": user.id if user else None,
     }
     from central.workers.exports import export_inventory_task
 
     export_inventory_task.delay(exporter, payload, parsed_settings, None)
     with get_session() as session:
         log_audit(
-            actor_user_id=user.id,
+            actor_user_id=user.id if user else None,
             action="tenant.export.run",
             entity_type="tenant",
             entity_id=tenant_id,
@@ -2955,6 +3449,7 @@ def admin_users(request: Request) -> HTMLResponse:
                         "full_name": u.full_name,
                         "display_name": u.full_name or u.email,
                         "is_superadmin": u.is_superadmin,
+                        "is_auditor": u.is_auditor,
                         "created_at": _format_dt(u.created_at),
                     }
                     for u in users
@@ -2968,6 +3463,55 @@ def admin_users(request: Request) -> HTMLResponse:
         "admin_users.html",
         {"request": request, "users": users, "error": error, "user": user},
     )
+
+
+@router.post("/admin/users/{user_id}/flags", response_model=None)
+async def admin_user_update_flags(
+    request: Request,
+    user_id: int,
+    is_superadmin: str | None = Form(None),
+    is_auditor: str | None = Form(None),
+):
+    user = require_superadmin(request)
+    if not isinstance(user, User):
+        return user
+    wants_json = "application/json" in request.headers.get("accept", "")
+    if is_superadmin is None and is_auditor is None:
+        try:
+            payload = await request.json()
+            is_superadmin = str(payload.get("is_superadmin")) if payload else None
+            is_auditor = str(payload.get("is_auditor")) if payload else None
+        except Exception:
+            is_superadmin = None
+            is_auditor = None
+    superadmin_value = True if is_superadmin in {"true", "1", "yes", "on"} else False
+    auditor_value = True if is_auditor in {"true", "1", "yes", "on"} else False
+    with get_session() as session:
+        target = session.query(User).filter(User.id == user_id).one_or_none()
+        if not target:
+            if wants_json:
+                return JSONResponse({"error": "User not found"}, status_code=404)
+            return _redirect_with_message("/admin/users", "User not found")
+        target.is_superadmin = superadmin_value
+        target.is_auditor = auditor_value
+        log_audit(
+            actor_user_id=user.id,
+            action="admin.user.flags",
+            entity_type="user",
+            entity_id=target.id,
+            details={"is_superadmin": target.is_superadmin, "is_auditor": target.is_auditor},
+            session=session,
+        )
+    if wants_json:
+        return JSONResponse(
+            {
+                "status": "updated",
+                "user_id": user_id,
+                "is_superadmin": superadmin_value,
+                "is_auditor": auditor_value,
+            }
+        )
+    return _redirect_with_message("/admin/users", "User updated")
 
 
 @router.get("/admin/audit", response_class=HTMLResponse)

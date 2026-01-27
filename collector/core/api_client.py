@@ -56,6 +56,12 @@ class ApiClient:
     async def acknowledge_job(self, payload: dict[str, Any]) -> ApiResponse:
         return await self._post_json("collectors/jobs/ack", payload)
 
+    async def submit_job_status(self, payload: dict[str, Any]) -> ApiResponse:
+        return await self._post_json("collectors/jobs/status", payload)
+
+    async def resolve_credentials(self, payload: dict[str, Any]) -> ApiResponse:
+        return await self._post_json("collectors/credentials/resolve", payload)
+
     async def submit_results(self, payload: dict[str, Any]) -> ApiResponse:
         return await self._post_json("collectors/jobs/result", payload)
 

@@ -1,0 +1,73 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Compliance and certificate posture",
+  "editable": true,
+  "graphTooltip": 0,
+  "id": null,
+  "panels": [
+    {
+      "datasource": "${DS_PROMETHEUS}",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "targets": [
+        {
+          "expr": "collector_cert_expiry_seconds",
+          "legendFormat": "{{collector}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Certificate Expiry (seconds)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 8 },
+      "id": 2,
+      "options": {
+        "content": "Schedule adherence metrics are not yet exported. Consider adding central_scan_schedule_lag_seconds to measure delay between scheduled and actual start.",
+        "mode": "markdown"
+      },
+      "title": "Schedule Adherence (TODO)",
+      "type": "text"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["compliance", "certificates"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "Prometheus", "value": "Prometheus" },
+        "hide": 0,
+        "label": "Datasource",
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-7d", "to": "now" },
+  "timezone": "utc",
+  "title": "InfraCensus Compliance",
+  "version": 1
+}

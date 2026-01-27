@@ -26,6 +26,7 @@
         <label>Roles</label><br />
         <label><input type="checkbox" name="roles" value="user_admin" /> User Admin</label><br />
         <label><input type="checkbox" name="roles" value="rw" /> Read/Write</label><br />
+        <label><input type="checkbox" name="roles" value="scan_operator" /> Scan Operator</label><br />
         <label><input type="checkbox" name="roles" value="ro" /> Read Only</label>
       </div>
       <button type="submit">Add or Update User</button>
@@ -50,6 +51,7 @@
               <form method="post" action="/tenants/{{ tenant_id }}/users/{{ membership.id }}/role" style="display: inline;">
                 <label><input type="checkbox" name="roles" value="user_admin" {% if "user_admin" in active_roles %}checked{% endif %} /> User Admin</label>
                 <label><input type="checkbox" name="roles" value="rw" {% if "rw" in active_roles %}checked{% endif %} /> Read/Write</label>
+                <label><input type="checkbox" name="roles" value="scan_operator" {% if "scan_operator" in active_roles %}checked{% endif %} /> Scan Operator</label>
                 <label><input type="checkbox" name="roles" value="ro" {% if "ro" in active_roles %}checked{% endif %} /> Read Only</label>
                 <button type="submit">Update</button>
               </form>

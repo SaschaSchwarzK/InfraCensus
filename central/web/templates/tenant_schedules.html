@@ -48,6 +48,10 @@
         </select>
       </div>
       <div style="margin-bottom: 0.5rem;">
+        <label for="schedule-priority">Priority</label><br />
+        <input id="schedule-priority" name="priority" type="number" value="0" style="width: 20%; padding: 0.4rem;" />
+      </div>
+      <div style="margin-bottom: 0.5rem;">
         <label>Networks</label><br />
         {% for network in networks %}
           <label><input type="checkbox" name="network_ids" value="{{ network.id }}" /> {{ network.name }} ({{ network.cidr }})</label><br />

@@ -5,8 +5,9 @@ from central.db.models import TenantUser, UserRole
 
 ROLE_ORDER = {
     UserRole.read_only: 1,
-    UserRole.read_write: 2,
-    UserRole.user_admin: 3,
+    UserRole.scan_operator: 2,
+    UserRole.read_write: 3,
+    UserRole.user_admin: 4,
 }
 
 
@@ -42,3 +43,17 @@ def has_tenant_access(
         effective = highest_role(roles)
         return ROLE_ORDER[effective] >= ROLE_ORDER[required]
     return False
+
+
+def parse_api_keys(value: str | None) -> dict[str, set[str]]:
+    keys: dict[str, set[str]] = {}
+    if not value:
+        return keys
+    for entry in value.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        key, _, scopes_raw = entry.partition(":")
+        scopes = {item.strip() for item in scopes_raw.split("|") if item.strip()}
+        keys[key.strip()] = scopes
+    return keys

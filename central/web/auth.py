@@ -6,7 +6,7 @@ from fastapi import Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from passlib.context import CryptContext
 
-from central.core.auth import has_tenant_access
+from central.core.auth import has_tenant_access, parse_api_keys
 from central.core.config import settings
 from central.db.models import TenantUser, User, UserRole
 from central.db.session import get_session
@@ -73,6 +73,8 @@ def require_tenant_role(
     if not isinstance(user_or_response, User):
         return user_or_response
     user = user_or_response
+    if user.is_auditor and role == UserRole.read_only:
+        return user
     with get_session() as session:
         memberships = (
             session.query(TenantUser)
@@ -95,3 +97,19 @@ def allow_collector_token(request: Request) -> bool:
         token = request.headers.get("x-collector-token", "").strip()
     valid_tokens = {item.strip() for item in settings.collector_tokens.split(",") if item.strip()}
     return token in valid_tokens
+
+
+def allow_api_key_scope(request: Request, scope: str) -> bool:
+    if not settings.api_keys:
+        return False
+    header = request.headers.get("authorization") or ""
+    key = ""
+    if header.lower().startswith("bearer "):
+        key = header.split(" ", 1)[1].strip()
+    if not key:
+        key = request.headers.get("x-api-key", "").strip()
+    if not key:
+        return False
+    keys = parse_api_keys(settings.api_keys)
+    scopes = keys.get(key, set())
+    return scope in scopes or "*" in scopes

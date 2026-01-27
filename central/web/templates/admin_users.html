@@ -13,6 +13,8 @@
           <th>Name</th>
           <th>Email</th>
           <th>Superadmin</th>
+          <th>Auditor</th>
+          <th>Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -21,10 +23,18 @@
             <td>{{ user.full_name or "" }}</td>
             <td>{{ user.email }}</td>
             <td>{% if user.is_superadmin %}<span class="tag">yes</span>{% else %}no{% endif %}</td>
+            <td>{% if user.is_auditor %}<span class="tag">yes</span>{% else %}no{% endif %}</td>
+            <td>
+              <form method="post" action="/admin/users/{{ user.id }}/flags" style="display: inline;">
+                <label><input type="checkbox" name="is_superadmin" value="true" {% if user.is_superadmin %}checked{% endif %} /> Superadmin</label>
+                <label><input type="checkbox" name="is_auditor" value="true" {% if user.is_auditor %}checked{% endif %} /> Auditor</label>
+                <button type="submit">Update</button>
+              </form>
+            </td>
           </tr>
         {% else %}
           <tr>
-            <td colspan="3" class="meta">No users found yet.</td>
+            <td colspan="5" class="meta">No users found yet.</td>
           </tr>
         {% endfor %}
       </tbody>
