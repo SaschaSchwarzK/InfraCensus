@@ -147,6 +147,25 @@ async def log_requests(request: Request, call_next) -> Response:
                 error=str(exc),
             )
             raise
+        except Exception as exc:
+            duration_ms = int((time.time() - start) * 1000)
+            span.set_attribute("http.status_code", 500)
+            span.record_exception(exc)
+            log_error(
+                logger,
+                "http.request",
+                request_id=request_id,
+                method=method,
+                path=path,
+                status_code=500,
+                duration_ms=duration_ms,
+                client_ip=request.client.host if request.client else None,
+                user_id=request.session.get("user_id")
+                if hasattr(request, "session")
+                else None,
+                error=str(exc),
+            )
+            raise
         duration_ms = int((time.time() - start) * 1000)
         span.set_attribute("http.status_code", response.status_code)
         log_info(

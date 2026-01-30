@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import time
+from asyncio import Lock
 from dataclasses import dataclass
-from threading import Lock
 from typing import Any
 from urllib.parse import urljoin
 
@@ -87,7 +87,7 @@ class ApiClient:
     ) -> ApiResponse:
         url = urljoin(self._base_url, path)
         if self._circuit_open_until and time.monotonic() < self._circuit_open_until:
-            self._record_request(path, 0, 0.0)
+            await self._record_request(path, 0, 0.0)
             return ApiResponse(
                 status_code=0,
                 payload={"error": "circuit_open"},
@@ -115,7 +115,7 @@ class ApiClient:
                         "error": "invalid_json",
                         "text": response.text[:2000],
                     }
-                self._record_request(path, response.status_code, duration)
+                await self._record_request(path, response.status_code, duration)
                 if 200 <= response.status_code < 300:
                     self._reset_circuit()
                 elif response.status_code >= 500:
@@ -124,7 +124,7 @@ class ApiClient:
             except httpx.RequestError as exc:
                 self._register_failure()
                 if attempt >= self._max_retries:
-                    self._record_request(path, 0, 0.0)
+                    await self._record_request(path, 0, 0.0)
                     return ApiResponse(
                         status_code=0,
                         payload={"error": "request_failed", "detail": str(exc)},
@@ -141,9 +141,11 @@ class ApiClient:
         self._failure_count = 0
         self._circuit_open_until = None
 
-    def _record_request(self, endpoint: str, status_code: int, duration: float) -> None:
+    async def _record_request(
+        self, endpoint: str, status_code: int, duration: float
+    ) -> None:
         key = (endpoint, status_code)
-        with self._metrics_lock:
+        async with self._metrics_lock:
             entry = self._request_metrics.get(key)
             if not entry:
                 entry = {"count": 0, "duration_sum": 0.0}
@@ -151,8 +153,8 @@ class ApiClient:
             entry["count"] += 1
             entry["duration_sum"] += duration
 
-    def metrics_snapshot(self) -> dict[tuple[str, int], dict[str, float]]:
-        with self._metrics_lock:
+    async def metrics_snapshot(self) -> dict[tuple[str, int], dict[str, float]]:
+        async with self._metrics_lock:
             return dict(self._request_metrics)
 
     def circuit_open(self) -> bool:
