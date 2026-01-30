@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
+PromCounter: Any = None
+PromHistogram: Any = None
 try:
-    from prometheus_client import Counter, Histogram
+    from prometheus_client import Counter as PromCounter
+    from prometheus_client import Histogram as PromHistogram
 except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional dependency
-    Counter = None
-    Histogram = None
+    PromCounter = None
+    PromHistogram = None
 
 
 def _noop_counter(*args: Any, **kwargs: Any) -> Any:
@@ -32,41 +35,41 @@ def _noop_histogram(*args: Any, **kwargs: Any) -> Any:
 
 
 job_assigned_counter = (
-    Counter(
+    PromCounter(
         "infracensus_jobs_assigned_total",
         "Total jobs assigned to collectors",
         ["scan_type", "tenant_id"],
     )
-    if Counter
+    if PromCounter is not None
     else _noop_counter()
 )
 
 job_completed_counter = (
-    Counter(
+    PromCounter(
         "infracensus_jobs_completed_total",
         "Total jobs completed by collectors",
         ["scan_type", "tenant_id"],
     )
-    if Counter
+    if PromCounter is not None
     else _noop_counter()
 )
 
 job_failed_counter = (
-    Counter(
+    PromCounter(
         "infracensus_jobs_failed_total",
         "Total jobs failed by collectors",
         ["scan_type", "tenant_id"],
     )
-    if Counter
+    if PromCounter is not None
     else _noop_counter()
 )
 
 job_duration_histogram = (
-    Histogram(
+    PromHistogram(
         "infracensus_job_duration_seconds",
         "Job execution duration",
         ["scan_type", "status"],
     )
-    if Histogram
+    if PromHistogram is not None
     else _noop_histogram()
 )

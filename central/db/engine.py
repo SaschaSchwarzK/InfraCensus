@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from typing import Any
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
@@ -9,14 +10,19 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
-from central.core.config import Settings, register_settings_listener, settings
+from central.core.config import (
+    Settings,
+    SettingsProxy,
+    register_settings_listener,
+    settings,
+)
 
 _engine_lock = threading.Lock()
 logger = logging.getLogger(__name__)
 
 
-def _build_engine(current: Settings) -> tuple[Engine, sessionmaker]:
-    engine_kwargs = {"future": True}
+def _build_engine(current: Settings | SettingsProxy) -> tuple[Engine, sessionmaker]:
+    engine_kwargs: dict[str, Any] = {"future": True}
     if current.database_url.startswith("sqlite"):
         engine_kwargs["connect_args"] = {"check_same_thread": False}
         engine_kwargs["poolclass"] = NullPool
@@ -50,7 +56,7 @@ def _apply_settings(new_settings: Settings) -> None:
     try:
         old_engine.dispose()
     except (SQLAlchemyError, OSError) as exc:
-        logger.warning("db.engine_dispose_failed", error=str(exc))
+        logger.warning("db.engine_dispose_failed", extra={"error": str(exc)})
 
 
 register_settings_listener(_apply_settings)

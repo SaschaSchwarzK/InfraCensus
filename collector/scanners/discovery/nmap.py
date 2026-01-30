@@ -47,9 +47,29 @@ async def _run_nmap(target: str, timeout: int) -> tuple[bool, str]:
         except FileNotFoundError:
             return False, "nmap_not_found"
         except subprocess.TimeoutExpired as exc:
-            output = (exc.stdout or "") + (exc.stderr or "")
+            stdout = (
+                exc.stdout.decode(errors="replace")
+                if isinstance(exc.stdout, bytes)
+                else (exc.stdout or "")
+            )
+            stderr = (
+                exc.stderr.decode(errors="replace")
+                if isinstance(exc.stderr, bytes)
+                else (exc.stderr or "")
+            )
+            output = stdout + stderr
             return False, output[:4000]
-        output = (completed.stdout or "") + (completed.stderr or "")
+        stdout = (
+            completed.stdout.decode(errors="replace")
+            if isinstance(completed.stdout, bytes)
+            else (completed.stdout or "")
+        )
+        stderr = (
+            completed.stderr.decode(errors="replace")
+            if isinstance(completed.stderr, bytes)
+            else (completed.stderr or "")
+        )
+        output = stdout + stderr
         return completed.returncode == 0, output[:4000]
 
     return await asyncio.to_thread(_run)

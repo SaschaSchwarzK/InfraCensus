@@ -15,3 +15,32 @@ class SnmpParser:
             "interfaces": self._parse_interfaces(raw_data),
             "neighbors": self._parse_lldp_cdp(raw_data),
         }
+
+    def _extract_serial(self, raw_data: dict) -> str | None:
+        value = raw_data.get("serial") or raw_data.get("serialNumber")
+        if value is None:
+            return None
+        return str(value).strip() or None
+
+    def _extract_base_mac(self, raw_data: dict) -> str | None:
+        value = raw_data.get("mac") or raw_data.get("baseMac")
+        if value is None:
+            return None
+        return str(value).strip() or None
+
+    def _map_vendor(self, sys_object_id: object) -> str | None:
+        if sys_object_id is None:
+            return None
+        return str(sys_object_id).strip() or None
+
+    def _parse_interfaces(self, raw_data: dict) -> list[dict]:
+        interfaces = raw_data.get("interfaces")
+        if isinstance(interfaces, list):
+            return interfaces
+        return []
+
+    def _parse_lldp_cdp(self, raw_data: dict) -> list[dict]:
+        neighbors = raw_data.get("neighbors")
+        if isinstance(neighbors, list):
+            return neighbors
+        return []

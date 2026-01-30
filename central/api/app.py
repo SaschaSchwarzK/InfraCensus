@@ -67,7 +67,9 @@ app.state.ca = CertificateAuthority(
 def _apply_settings(new_settings: Settings) -> None:
     for middleware in app.user_middleware:
         if middleware.cls is SessionMiddleware:
-            middleware.options["secret_key"] = new_settings.session_secret
+            options = getattr(middleware, "options", None)
+            if isinstance(options, dict):
+                options["secret_key"] = new_settings.session_secret
     app.middleware_stack = None
     try:
         loop = asyncio.get_running_loop()

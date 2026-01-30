@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -158,7 +159,7 @@ class SettingsState:
         self._lock = threading.Lock()
         self._settings: Settings | None = None
         self._config_hash: str | None = None
-        self._listeners: list[callable[[Settings], None]] = []
+        self._listeners: list[Callable[[Settings], None]] = []
 
     @property
     def settings(self) -> Settings:
@@ -179,7 +180,10 @@ class SettingsState:
             try:
                 listener(new_settings)
             except (RuntimeError, ValueError, TypeError) as exc:
-                logger.warning("config.reload_listener_failed", error=str(exc))
+                logger.warning(
+                    "config.reload_listener_failed",
+                    extra={"error": str(exc)},
+                )
 
     def reload_sync(self, force: bool = False) -> None:
         try:
@@ -189,7 +193,7 @@ class SettingsState:
             return
         loop.create_task(self.reload(force=force))
 
-    def add_listener(self, listener: callable[[Settings], None]) -> None:
+    def add_listener(self, listener: Callable[[Settings], None]) -> None:
         self._listeners.append(listener)
 
 
@@ -198,7 +202,7 @@ _settings_state = SettingsState(_config_source)
 settings = SettingsProxy(_settings_state)
 
 
-def register_settings_listener(listener: callable[[Settings], None]) -> None:
+def register_settings_listener(listener: Callable[[Settings], None]) -> None:
     _settings_state.add_listener(listener)
 
 
@@ -219,7 +223,10 @@ async def start_config_polling() -> None:
             try:
                 await _settings_state.reload()
             except (RuntimeError, ValueError, TypeError) as exc:
-                logger.warning("config.reload_failed", error=str(exc))
+                logger.warning(
+                    "config.reload_failed",
+                    extra={"error": str(exc)},
+                )
 
     asyncio.create_task(_poll())
 

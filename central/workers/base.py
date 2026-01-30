@@ -6,7 +6,7 @@ import logging
 import os
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from celery import Task
 
@@ -19,27 +19,32 @@ from central.core.logging import (
 )
 from central.db.session import get_session
 
-try:
+if TYPE_CHECKING:  # pragma: no cover
     from central.db.models import PermanentFailure, TaskFailureLog
-except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional model
-    TaskFailureLog = None
-    PermanentFailure = None
+else:
+    PermanentFailure: Any = None
+    TaskFailureLog: Any = None
 
+_structlog: Any = None
 try:
-    import structlog
+    import structlog as _structlog
 except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional dependency
-    structlog = None
+    _structlog = None
 
+PromCounter: Any = None
+PromHistogram: Any = None
 try:
-    from prometheus_client import Counter, Histogram
+    from prometheus_client import Counter as PromCounter
+    from prometheus_client import Histogram as PromHistogram
 except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional dependency
-    Counter = None
-    Histogram = None
+    PromCounter = None
+    PromHistogram = None
 
+_redis: Any = None
 try:
-    import redis
+    import redis as _redis
 except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional dependency
-    redis = None
+    _redis = None
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +72,7 @@ def _noop_histogram(*args: Any, **kwargs: Any) -> Any:
                 def __enter__(self) -> None:
                     return None
 
-                def __exit__(self, *_exc: Any) -> bool:
+                def __exit__(self, *_exc: Any) -> Literal[False]:
                     return False
 
             return _Timer()
@@ -76,27 +81,27 @@ def _noop_histogram(*args: Any, **kwargs: Any) -> Any:
 
 
 task_counter = (
-    Counter("worker_tasks_total", "Total tasks processed", ["task_name", "status"])
-    if Counter
+    PromCounter("worker_tasks_total", "Total tasks processed", ["task_name", "status"])
+    if PromCounter is not None
     else _noop_counter()
 )
 task_duration = (
-    Histogram("worker_task_duration_seconds", "Task duration", ["task_name"])
-    if Histogram
+    PromHistogram("worker_task_duration_seconds", "Task duration", ["task_name"])
+    if PromHistogram is not None
     else _noop_histogram()
 )
 
 _redis_client = None
-_REDIS_ERRORS = (ConnectionError, OSError, ValueError)
-if redis is not None and hasattr(redis, "RedisError"):
-    _REDIS_ERRORS = (redis.RedisError, ConnectionError, OSError, ValueError)
+_REDIS_ERRORS: tuple[type[BaseException], ...] = (ConnectionError, OSError, ValueError)
+if _redis is not None and hasattr(_redis, "RedisError"):
+    _REDIS_ERRORS = (_redis.RedisError, ConnectionError, OSError, ValueError)
 
 
 def _get_redis_client() -> Any:
     global _redis_client
     if _redis_client is not None:
         return _redis_client
-    if redis is None:
+    if _redis is None:
         return None
     url = (
         os.getenv("REDIS_URL")
@@ -105,7 +110,7 @@ def _get_redis_client() -> Any:
         or "redis://redis:6379/0"
     )
     try:
-        _redis_client = redis.from_url(url)
+        _redis_client = _redis.from_url(url)
     except _REDIS_ERRORS as exc:
         log_warning(logger, "redis.client_init_failed", error=str(exc))
         _redis_client = None

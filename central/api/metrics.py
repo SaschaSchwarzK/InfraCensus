@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from central.core.config import settings
@@ -7,6 +8,7 @@ from central.core.parsing import parse_int_list
 from central.db.models import Collector, Network, ScanSchedule, ScanScheduleType
 from central.db.session import get_session
 
+generate_latest: Callable[[], bytes] | None = None
 try:
     from prometheus_client import generate_latest
 except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional dependency
@@ -168,7 +170,7 @@ def _build_collector_health() -> list[str]:
 
 
 def _build_prometheus_metrics() -> list[str]:
-    if not generate_latest:
+    if generate_latest is None:
         return []
     payload = generate_latest().decode("utf-8")
     return [line for line in payload.splitlines() if line]

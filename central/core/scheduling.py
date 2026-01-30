@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
@@ -178,7 +179,7 @@ def _collector_inflight(session: Session, collector_id: int) -> int:
 
 
 def _rate_limit_allows(
-    session: Session, tenant_id: int, network_ids: list[int], now: datetime
+    session: Any, tenant_id: int, network_ids: list[int], now: datetime
 ) -> bool:
     if settings.scheduler_network_rate_limit_per_minute <= 0:
         return True
@@ -299,4 +300,12 @@ def _network_in_subnet(network_cidr: str | None, affinity_cidr: str) -> bool:
         affinity_net = ipaddress.ip_network(affinity_cidr, strict=False)
     except ValueError:
         return False
-    return network.subnet_of(affinity_net)
+    if isinstance(network, ipaddress.IPv4Network) and isinstance(
+        affinity_net, ipaddress.IPv4Network
+    ):
+        return network.subnet_of(affinity_net)
+    if isinstance(network, ipaddress.IPv6Network) and isinstance(
+        affinity_net, ipaddress.IPv6Network
+    ):
+        return network.subnet_of(affinity_net)
+    return False

@@ -16,7 +16,8 @@ from central.db import models  # noqa: F401,E402
 from central.db.base import Base  # noqa: E402
 
 config = context.config
-fileConfig(config.config_file_name)
+if config.config_file_name:
+    fileConfig(config.config_file_name)
 
 config.set_main_option("sqlalchemy.url", settings.database_url)
 
@@ -36,8 +37,9 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    section = config.get_section(config.config_ini_section) or {}
     connectable = engine_from_config(
-        config.get_section(config.config_ini_section),
+        section,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )

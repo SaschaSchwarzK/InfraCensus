@@ -44,13 +44,13 @@ def parse_int_list(value: str | list[int] | list[str] | None) -> list[int]:
                 except ValueError:
                     continue
         return values
-    values: list[int] = []
+    parsed_values: list[int] = []
     for item in parse_csv(value):
         try:
-            values.append(int(item))
+            parsed_values.append(int(item))
         except ValueError:
             continue
-    return values
+    return parsed_values
 
 
 def parse_str_list(value: object) -> list[str]:

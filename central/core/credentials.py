@@ -3,11 +3,11 @@ from __future__ import annotations
 import ipaddress
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from central.core.config import settings
 from central.core.vault import VaultClient, VaultSettings
-from central.db.models import CredentialAssignment, CredentialSet
+from central.db.models import CredentialAssignment
 from central.db.session import get_session
 
 
@@ -69,11 +69,15 @@ def _load_assignments(tenant_id: int, protocol: str) -> list[CredentialAssignmen
         )
 
 
+class _CredentialSetLike(Protocol):
+    vault_index: int
+
+
 async def _fetch_secret(
     vault: VaultClient,
     tenant_id: int,
     protocol: str,
-    credential_set: CredentialSet,
+    credential_set: _CredentialSetLike,
 ) -> dict[str, Any] | None:
     path = f"{tenant_id}/{protocol}/{credential_set.vault_index}"
     return await vault.read_secret(path)

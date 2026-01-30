@@ -79,6 +79,10 @@ class CollectorConfig:
     backends: dict[str, dict[str, object]]
 
     @classmethod
+    def from_env(cls) -> CollectorConfig:
+        return load_config()
+
+    @classmethod
     def from_sources(cls, config: dict[str, Any]) -> CollectorConfig:
         central_url = _resolve_central_url(config)
         if not central_url.startswith(("http://", "https://")):

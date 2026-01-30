@@ -3,15 +3,16 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 from central.core.celery_config import celery_app
 from central.core.logging import log_error
 from central.db.session import get_session
 
-try:
+if TYPE_CHECKING:  # pragma: no cover
     from central.db.models import PermanentFailure
-except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional model
-    PermanentFailure = None
+else:
+    PermanentFailure: Any = None
 
 logger = logging.getLogger(__name__)
 

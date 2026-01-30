@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -61,7 +62,7 @@ class CertificateAuthority:
             ca_pem,
         )
 
-    def _load_or_create_ca(self) -> tuple[rsa.RSAPrivateKey, x509.Certificate]:
+    def _load_or_create_ca(self) -> tuple[Any, x509.Certificate]:
         if self._key_path.exists() and self._cert_path.exists():
             key = serialization.load_pem_private_key(
                 self._key_path.read_bytes(), password=None

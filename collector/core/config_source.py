@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
 
@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 class ConfigSource:
     config_file: str | None
     git_url: str | None
-    git_ref: str
-    git_path: str
-    git_dir: str
+    git_ref: str | None
+    git_path: str | None
+    git_dir: str | None
 
     @classmethod
     def from_env(cls) -> ConfigSource:
@@ -41,7 +41,7 @@ class ConfigSource:
         if not config_path:
             return {}, None
         if not config_path.exists():
-            logger.warning("config.source_missing", path=str(config_path))
+            logger.warning("config.source_missing", extra={"path": str(config_path)})
             return {}, None
         content = config_path.read_bytes()
         digest = hashlib.sha256(content).hexdigest()
@@ -54,12 +54,16 @@ class ConfigSource:
         if self.git_url:
             await self._ensure_repo()
             await self._update_repo()
+            if not self.git_dir or not self.git_path:
+                return None
             return Path(self.git_dir) / self.git_path
         if self.config_file:
             return Path(self.config_file)
         return None
 
     async def _ensure_repo(self) -> None:
+        if not self.git_dir:
+            raise RuntimeError("CONFIG_GIT_DIR is required when CONFIG_GIT_URL is set")
         repo_dir = Path(self.git_dir)
         if repo_dir.exists() and (repo_dir / ".git").exists():
             return
@@ -69,12 +73,16 @@ class ConfigSource:
             )
         repo_dir.parent.mkdir(parents=True, exist_ok=True)
         await self._run_git(
-            ["clone", "--depth", "1", self.git_url or "", str(repo_dir)]
+            ["clone", "--depth", "1", str(self.git_url or ""), str(repo_dir)]
         )
 
     async def _update_repo(self) -> None:
+        if not self.git_dir:
+            return
         repo_dir = Path(self.git_dir)
         if not repo_dir.exists():
+            return
+        if not self.git_ref:
             return
         await self._run_git(
             ["fetch", "--depth", "1", "origin", self.git_ref], cwd=repo_dir
@@ -95,9 +103,11 @@ class ConfigSource:
         if process.returncode != 0:
             logger.error(
                 "config.git_failed",
-                args=" ".join(args),
-                stdout=(stdout or b"").decode().strip(),
-                stderr=(stderr or b"").decode().strip(),
+                extra={
+                    "args": " ".join(args),
+                    "stdout": (stdout or b"").decode().strip(),
+                    "stderr": (stderr or b"").decode().strip(),
+                },
             )
             raise RuntimeError("Git command failed")
 
