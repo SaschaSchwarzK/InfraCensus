@@ -111,15 +111,6 @@ async def _apply_rate_limit(
     if collector.status == "quarantined":
         return False
     if not await _apply_rate_limit_key(rate_limiter, collector.id):
-
-        def _quarantine() -> None:
-            with get_session() as session:
-                db_collector = (
-                    session.query(Collector).filter(Collector.id == collector.id).one()
-                )
-                db_collector.status = "quarantined"
-
-        await asyncio.to_thread(_quarantine)
         return False
     return True
 

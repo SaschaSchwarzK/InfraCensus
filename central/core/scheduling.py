@@ -188,6 +188,7 @@ def _rate_limit_allows(
     records = (
         session.query(NetworkRateLimit)
         .filter(NetworkRateLimit.network_id.in_(network_ids))
+        .with_for_update()
         .all()
     )
     record_map = {record.network_id: record for record in records}
