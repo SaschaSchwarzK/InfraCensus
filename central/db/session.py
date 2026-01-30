@@ -1,5 +1,7 @@
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
+
+from sqlalchemy.exc import SQLAlchemyError
 
 from central.db.engine import SessionLocal
 
@@ -10,7 +12,7 @@ def get_session() -> Iterator:
     try:
         yield session
         session.commit()
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:

@@ -1,21 +1,26 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable, Optional, Sequence
+import hashlib
 import ipaddress
 import json
-import hashlib
 import secrets
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from collections.abc import Callable, Iterable, Sequence
+from datetime import UTC, datetime, timedelta
+from json import JSONDecodeError
+from typing import Any
 from urllib.parse import quote_plus
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import joinedload
 
-from central.core.audit import log_audit
+from central.core.audit import log_audit, log_security_event
 from central.core.auth import highest_role
+from central.core.config import settings
+from central.core.parsing import format_utc, parse_labels, parse_optional_str_list
 from central.db.models import (
     AuditLog,
     Collector,
@@ -31,12 +36,12 @@ from central.db.models import (
     Tenant,
     TenantUser,
     User,
+    UserRole,
 )
 from central.db.session import get_session
-from central.core.config import settings
 from central.web.auth import (
-    allow_collector_token,
     allow_api_key_scope,
+    allow_collector_token,
     authenticate,
     hash_password,
     login_user,
@@ -46,18 +51,18 @@ from central.web.auth import (
     require_user,
 )
 from central.web.oidc import get_oauth, oidc_enabled
-from central.db.models import UserRole
 
 templates = Jinja2Templates(directory="central/web/templates")
 router = APIRouter()
 
 _ALLOWED_CREDENTIAL_PROTOCOLS = {"snmp", "ssh", "http"}
+type WebResponse = HTMLResponse | JSONResponse | RedirectResponse
 
 
-def _safe_query(fetch: Callable[[], Iterable[Any]]) -> tuple[list[Any], Optional[str]]:
+def _safe_query(fetch: Callable[[], Iterable[Any]]) -> tuple[list[Any], str | None]:
     try:
         return list(fetch()), None
-    except Exception as exc:  # pragma: no cover - guard for missing migrations
+    except SQLAlchemyError as exc:  # pragma: no cover - guard for missing migrations
         return [], str(exc)
 
 
@@ -68,8 +73,7 @@ def _wants_json(request: Request) -> bool:
 def _format_dt(value: Any) -> str | None:
     if not value:
         return None
-    utc_value = value.astimezone(timezone.utc)
-    return utc_value.isoformat().replace("+00:00", "Z")
+    return format_utc(value)
 
 
 def _parse_csv(value: str | None) -> list[str]:
@@ -78,9 +82,21 @@ def _parse_csv(value: str | None) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-
 def _is_valid_timezone(value: str) -> bool:
-    banned = {"CET", "CEST", "EST", "EDT", "PST", "PDT", "CST", "CDT", "MST", "MDT", "GMT", "UTC"}
+    banned = {
+        "CET",
+        "CEST",
+        "EST",
+        "EDT",
+        "PST",
+        "PDT",
+        "CST",
+        "CDT",
+        "MST",
+        "MDT",
+        "GMT",
+        "UTC",
+    }
     if value.upper() in banned:
         return False
     try:
@@ -92,6 +108,18 @@ def _is_valid_timezone(value: str) -> bool:
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _parse_labels_value(value: object) -> dict[str, str] | None:
+    return parse_labels(value)
+
+
+def _parse_capabilities_value(value: object) -> list[str] | None:
+    return parse_optional_str_list(value)
+
+
+def _parse_scopes_value(value: object) -> list[str] | None:
+    return parse_optional_str_list(value)
 
 
 def _pagination_params(request: Request) -> tuple[int, int]:
@@ -108,7 +136,7 @@ def _pagination_params(request: Request) -> tuple[int, int]:
     return limit, offset
 
 
-def _paginate_query(query, request: Request):
+def _paginate_query(query, request: Request) -> tuple[Any, int, int]:
     limit, offset = _pagination_params(request)
     return query.limit(limit).offset(offset), limit, offset
 
@@ -123,9 +151,9 @@ def _redirect_with_message(url: str, message: str) -> RedirectResponse:
 
 
 @router.get("/", response_class=HTMLResponse)
-def home(request: Request) -> HTMLResponse:
+def home(request: Request) -> WebResponse:
     user = require_user(request)
-    if isinstance(user, RedirectResponse):
+    if not isinstance(user, User):
         return user
 
     def fetch_stats() -> dict[str, int]:
@@ -158,7 +186,7 @@ def home(request: Request) -> HTMLResponse:
     stats, error = {}, None
     try:
         stats = fetch_stats()
-    except Exception as exc:  # pragma: no cover - guard for missing migrations
+    except SQLAlchemyError as exc:  # pragma: no cover - guard for missing migrations
         error = str(exc)
         stats = {"tenants": 0, "collectors": 0, "devices": 0}
 
@@ -190,7 +218,7 @@ def home(request: Request) -> HTMLResponse:
 
 
 @router.get("/login", response_class=HTMLResponse)
-def login_form(request: Request) -> HTMLResponse:
+def login_form(request: Request) -> WebResponse:
     if oidc_enabled():
         oauth = get_oauth()
         return oauth.okta.authorize_redirect(request, settings.oidc_redirect_uri)
@@ -200,17 +228,47 @@ def login_form(request: Request) -> HTMLResponse:
 
 
 @router.post("/login", response_class=HTMLResponse)
-def login_submit(request: Request, email: str = Form(...), password: str = Form(...)) -> HTMLResponse:
+def login_submit(
+    request: Request, email: str = Form(...), password: str = Form(...)
+) -> WebResponse:
     if oidc_enabled():
+        log_security_event(
+            action="login.oidc_blocked",
+            outcome="denied",
+            details={
+                "email": email,
+                "ip": request.client.host if request.client else None,
+                "user_agent": request.headers.get("user-agent"),
+            },
+        )
         return HTMLResponse(content="OIDC login enabled", status_code=400)
     user = authenticate(email, password)
     if not user:
+        log_security_event(
+            action="login.failed",
+            outcome="denied",
+            details={
+                "email": email,
+                "ip": request.client.host if request.client else None,
+                "user_agent": request.headers.get("user-agent"),
+            },
+        )
         return templates.TemplateResponse(
             "login.html",
             {"request": request, "error": "Invalid credentials"},
             status_code=401,
         )
     login_user(request, user)
+    log_security_event(
+        action="login.success",
+        outcome="success",
+        actor_user_id=user.id,
+        details={
+            "email": user.email,
+            "ip": request.client.host if request.client else None,
+            "user_agent": request.headers.get("user-agent"),
+        },
+    )
     return RedirectResponse(url="/", status_code=302)
 
 
@@ -218,6 +276,16 @@ def login_submit(request: Request, email: str = Form(...), password: str = Form(
 def logout(request: Request) -> RedirectResponse:
     oidc_logout_url = settings.oidc_logout_url
     id_token = request.session.get("id_token")
+    user_id = request.session.get("user_id")
+    log_security_event(
+        action="logout",
+        outcome="success",
+        actor_user_id=user_id,
+        details={
+            "ip": request.client.host if request.client else None,
+            "user_agent": request.headers.get("user-agent"),
+        },
+    )
     logout_user(request)
     if oidc_logout_url and id_token:
         redirect_url = f"{oidc_logout_url}?id_token_hint={id_token}&post_logout_redirect_uri={settings.oidc_redirect_uri}"
@@ -226,9 +294,9 @@ def logout(request: Request) -> RedirectResponse:
 
 
 @router.get("/tenants", response_class=HTMLResponse)
-def tenant_list(request: Request) -> HTMLResponse:
+def tenant_list(request: Request) -> WebResponse:
     user = require_user(request)
-    if isinstance(user, RedirectResponse):
+    if not isinstance(user, User):
         return user
 
     def fetch() -> Iterable[Tenant]:
@@ -265,7 +333,7 @@ def tenant_list(request: Request) -> HTMLResponse:
 
 
 @router.get("/tenants/{tenant_id}/users", response_class=HTMLResponse)
-def tenant_users(request: Request, tenant_id: int) -> HTMLResponse:
+def tenant_users(request: Request, tenant_id: int) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
@@ -310,7 +378,8 @@ def tenant_users(request: Request, tenant_id: int) -> HTMLResponse:
                         "user_id": membership.user_id,
                         "email": membership.user.email,
                         "full_name": membership.user.full_name,
-                        "display_name": membership.user.full_name or membership.user.email,
+                        "display_name": membership.user.full_name
+                        or membership.user.email,
                         "roles": membership.roles.split(",")
                         if membership.roles
                         else [membership.role.value],
@@ -337,7 +406,7 @@ def tenant_users(request: Request, tenant_id: int) -> HTMLResponse:
 
 
 @router.get("/tenants/{tenant_id}/sites", response_class=HTMLResponse)
-def tenant_sites(request: Request, tenant_id: int) -> HTMLResponse:
+def tenant_sites(request: Request, tenant_id: int) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.read_only)
     if not isinstance(user, User):
         return user
@@ -406,7 +475,7 @@ async def tenant_site_create(
     timezone: str | None = Form(None),
     code: str | None = Form(None),
     description: str | None = Form(None),
-):
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.read_write)
     if not isinstance(user, User):
         return user
@@ -418,7 +487,7 @@ async def tenant_site_create(
             timezone = payload.get("timezone") if payload else timezone
             code = payload.get("code") if payload else code
             description = payload.get("description") if payload else description
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             name = None
     if not name:
         if wants_json:
@@ -460,7 +529,9 @@ async def tenant_site_create(
             session=session,
         )
     if wants_json:
-        return JSONResponse({"status": "created", "site_id": site.id, "name": site.name})
+        return JSONResponse(
+            {"status": "created", "site_id": site.id, "name": site.name}
+        )
     return _redirect_with_message(
         f"/tenants/{tenant_id}/sites",
         f"Site {name} created",
@@ -468,7 +539,7 @@ async def tenant_site_create(
 
 
 @router.get("/tenants/{tenant_id}/sites/{site_id}", response_class=HTMLResponse)
-def tenant_site_edit(request: Request, tenant_id: int, site_id: int) -> HTMLResponse:
+def tenant_site_edit(request: Request, tenant_id: int, site_id: int) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.read_write)
     if not isinstance(user, User):
         return user
@@ -483,9 +554,11 @@ def tenant_site_edit(request: Request, tenant_id: int, site_id: int) -> HTMLResp
 
     sites, error = _safe_query(fetch)
     site = sites[0] if sites else None
+
     def fetch_tenant() -> Iterable[Tenant]:
         with get_session() as session:
             return session.query(Tenant).filter(Tenant.id == tenant_id).all()
+
     tenants, _ = _safe_query(fetch_tenant)
     tenant = tenants[0] if tenants else None
     if _wants_json(request):
@@ -528,7 +601,7 @@ async def tenant_site_update(
     timezone: str | None = Form(None),
     code: str | None = Form(None),
     description: str | None = Form(None),
-):
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.read_write)
     if not isinstance(user, User):
         return user
@@ -540,7 +613,7 @@ async def tenant_site_update(
             timezone = payload.get("timezone") if payload else timezone
             code = payload.get("code") if payload else code
             description = payload.get("description") if payload else description
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             name = None
     if not name:
         if wants_json:
@@ -589,7 +662,9 @@ async def tenant_site_update(
             session=session,
         )
     if wants_json:
-        return JSONResponse({"status": "updated", "site_id": site.id, "name": site.name})
+        return JSONResponse(
+            {"status": "updated", "site_id": site.id, "name": site.name}
+        )
     return _redirect_with_message(
         f"/tenants/{tenant_id}/sites",
         f"Site {name} updated",
@@ -602,7 +677,7 @@ def tenant_site_delete(
     tenant_id: int,
     site_id: int,
     confirm_name: str = Form(...),
-):
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.read_write)
     if not isinstance(user, User):
         return user
@@ -661,7 +736,7 @@ def tenant_site_delete(
 
 
 @router.get("/tenants/{tenant_id}/networks", response_class=HTMLResponse)
-def tenant_networks(request: Request, tenant_id: int) -> HTMLResponse:
+def tenant_networks(request: Request, tenant_id: int) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.read_only)
     if not isinstance(user, User):
         return user
@@ -697,9 +772,11 @@ def tenant_networks(request: Request, tenant_id: int) -> HTMLResponse:
     networks, error = _safe_query(fetch)
     sites, _ = _safe_query(fetch_sites)
     site_map = {site.id: site.name for site in sites}
+
     def fetch_tenant() -> Iterable[Tenant]:
         with get_session() as session:
             return session.query(Tenant).filter(Tenant.id == tenant_id).all()
+
     tenants, _ = _safe_query(fetch_tenant)
     tenant = tenants[0] if tenants else None
     if _wants_json(request):
@@ -720,9 +797,7 @@ def tenant_networks(request: Request, tenant_id: int) -> HTMLResponse:
                     }
                     for network in networks
                 ],
-                "sites": [
-                    {"id": site.id, "name": site.name} for site in sites
-                ],
+                "sites": [{"id": site.id, "name": site.name} for site in sites],
                 "error": error,
                 "limit": limit,
                 "offset": offset,
@@ -752,7 +827,7 @@ async def tenant_network_create(
     cidr: str | None = Form(None),
     site_id: str | None = Form(None),
     description: str | None = Form(None),
-):
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.read_write)
     if not isinstance(user, User):
         return user
@@ -762,13 +837,19 @@ async def tenant_network_create(
             payload = await request.json()
             name = payload.get("name") if payload else name
             cidr = payload.get("cidr") if payload else cidr
-            site_id = str(payload.get("site_id")) if payload and payload.get("site_id") is not None else site_id
+            site_id = (
+                str(payload.get("site_id"))
+                if payload and payload.get("site_id") is not None
+                else site_id
+            )
             description = payload.get("description") if payload else description
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             name = name
     if not name or not cidr:
         if wants_json:
-            return JSONResponse({"error": "Name and CIDR are required"}, status_code=400)
+            return JSONResponse(
+                {"error": "Name and CIDR are required"}, status_code=400
+            )
         return _redirect_with_message(
             f"/tenants/{tenant_id}/networks",
             "Name and CIDR are required",
@@ -809,7 +890,7 @@ async def tenant_network_create(
 @router.get("/tenants/{tenant_id}/networks/{network_id}", response_class=HTMLResponse)
 def tenant_network_edit(
     request: Request, tenant_id: int, network_id: int
-) -> HTMLResponse:
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.read_write)
     if not isinstance(user, User):
         return user
@@ -834,9 +915,11 @@ def tenant_network_edit(
     networks, error = _safe_query(fetch)
     sites, _ = _safe_query(fetch_sites)
     network = networks[0] if networks else None
+
     def fetch_tenant() -> Iterable[Tenant]:
         with get_session() as session:
             return session.query(Tenant).filter(Tenant.id == tenant_id).all()
+
     tenants, _ = _safe_query(fetch_tenant)
     tenant = tenants[0] if tenants else None
     if _wants_json(request):
@@ -881,7 +964,7 @@ async def tenant_network_update(
     cidr: str | None = Form(None),
     site_id: str | None = Form(None),
     description: str | None = Form(None),
-):
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.read_write)
     if not isinstance(user, User):
         return user
@@ -891,13 +974,19 @@ async def tenant_network_update(
             payload = await request.json()
             name = payload.get("name") if payload else name
             cidr = payload.get("cidr") if payload else cidr
-            site_id = str(payload.get("site_id")) if payload and payload.get("site_id") is not None else site_id
+            site_id = (
+                str(payload.get("site_id"))
+                if payload and payload.get("site_id") is not None
+                else site_id
+            )
             description = payload.get("description") if payload else description
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             name = name
     if not name or not cidr:
         if wants_json:
-            return JSONResponse({"error": "Name and CIDR are required"}, status_code=400)
+            return JSONResponse(
+                {"error": "Name and CIDR are required"}, status_code=400
+            )
         return _redirect_with_message(
             f"/tenants/{tenant_id}/networks",
             "Name and CIDR are required",
@@ -948,7 +1037,7 @@ def tenant_network_delete(
     tenant_id: int,
     network_id: int,
     confirm_name: str = Form(...),
-):
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.read_write)
     if not isinstance(user, User):
         return user
@@ -994,14 +1083,16 @@ def tenant_network_delete(
 
 
 @router.get("/tenants/{tenant_id}/schedules", response_class=HTMLResponse)
-def tenant_schedules(request: Request, tenant_id: int) -> HTMLResponse:
+def tenant_schedules(request: Request, tenant_id: int) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.read_only)
     if not isinstance(user, User):
         return user
 
     def fetch_schedules() -> Iterable[ScanSchedule]:
         with get_session() as session:
-            query = session.query(ScanSchedule).filter(ScanSchedule.tenant_id == tenant_id)
+            query = session.query(ScanSchedule).filter(
+                ScanSchedule.tenant_id == tenant_id
+            )
             site_filter = request.query_params.get("site_id")
             scan_type_filter = request.query_params.get("scan_type")
             start_after = request.query_params.get("start_after")
@@ -1012,7 +1103,9 @@ def tenant_schedules(request: Request, tenant_id: int) -> HTMLResponse:
                 except ValueError:
                     pass
             if scan_type_filter:
-                query = query.filter(ScanSchedule.scan_types.ilike(f"%{scan_type_filter}%"))
+                query = query.filter(
+                    ScanSchedule.scan_types.ilike(f"%{scan_type_filter}%")
+                )
             if start_after:
                 query = query.filter(ScanSchedule.scheduled_at_utc >= start_after)
             if start_before:
@@ -1108,7 +1201,7 @@ def tenant_schedules(request: Request, tenant_id: int) -> HTMLResponse:
 
 
 @router.get("/tenants/{tenant_id}/collectors/enrollment", response_class=HTMLResponse)
-def tenant_collector_enrollment(request: Request, tenant_id: int) -> HTMLResponse:
+def tenant_collector_enrollment(request: Request, tenant_id: int) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
@@ -1122,7 +1215,9 @@ def tenant_collector_enrollment(request: Request, tenant_id: int) -> HTMLRespons
             used_filter = request.query_params.get("used")
             if site_filter:
                 try:
-                    query = query.filter(CollectorEnrollmentToken.site_id == int(site_filter))
+                    query = query.filter(
+                        CollectorEnrollmentToken.site_id == int(site_filter)
+                    )
                 except ValueError:
                     pass
             if used_filter in {"true", "false"}:
@@ -1208,7 +1303,7 @@ async def tenant_collector_enrollment_create(
     tenant_id: int,
     site_id: str | None = Form(None),
     ttl_minutes: str | None = Form(None),
-):
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
@@ -1216,9 +1311,17 @@ async def tenant_collector_enrollment_create(
     if ttl_minutes is None:
         try:
             payload = await request.json()
-            site_id = str(payload.get("site_id")) if payload and payload.get("site_id") is not None else site_id
-            ttl_minutes = str(payload.get("ttl_minutes")) if payload and payload.get("ttl_minutes") is not None else ttl_minutes
-        except Exception:
+            site_id = (
+                str(payload.get("site_id"))
+                if payload and payload.get("site_id") is not None
+                else site_id
+            )
+            ttl_minutes = (
+                str(payload.get("ttl_minutes"))
+                if payload and payload.get("ttl_minutes") is not None
+                else ttl_minutes
+            )
+        except (JSONDecodeError, ValueError, TypeError):
             ttl_minutes = None
     try:
         ttl_value = int(ttl_minutes) if ttl_minutes else 30
@@ -1226,7 +1329,9 @@ async def tenant_collector_enrollment_create(
         ttl_value = 30
     if ttl_value <= 0 or ttl_value > 1440:
         if wants_json:
-            return JSONResponse({"error": "ttl_minutes must be between 1 and 1440"}, status_code=400)
+            return JSONResponse(
+                {"error": "ttl_minutes must be between 1 and 1440"}, status_code=400
+            )
         return _redirect_with_message(
             f"/tenants/{tenant_id}/collectors/enrollment",
             "ttl_minutes must be between 1 and 1440",
@@ -1234,7 +1339,7 @@ async def tenant_collector_enrollment_create(
     token_value = secrets.token_urlsafe(32)
     token_hash = _hash_token(token_value)
     parsed_site_id = int(site_id) if site_id else None
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=ttl_value)
+    expires_at = datetime.now(UTC) + timedelta(minutes=ttl_value)
     with get_session() as session:
         entry = CollectorEnrollmentToken(
             tenant_id=tenant_id,
@@ -1245,6 +1350,17 @@ async def tenant_collector_enrollment_create(
         )
         session.add(entry)
         session.flush()
+        log_security_event(
+            action="collector.enrollment_token.create",
+            outcome="success",
+            actor_user_id=user.id,
+            details={
+                "tenant_id": tenant_id,
+                "site_id": parsed_site_id,
+                "ttl_minutes": ttl_value,
+            },
+            session=session,
+        )
         log_audit(
             actor_user_id=user.id,
             action="collector.enrollment.create",
@@ -1268,7 +1384,7 @@ async def tenant_collector_enrollment_create(
 
 
 @router.get("/tenants/{tenant_id}/collectors", response_class=HTMLResponse)
-def tenant_collectors(request: Request, tenant_id: int) -> HTMLResponse:
+def tenant_collectors(request: Request, tenant_id: int) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
@@ -1307,7 +1423,6 @@ def tenant_collectors(request: Request, tenant_id: int) -> HTMLResponse:
     tenants, _ = _safe_query(fetch_tenant)
     tenant = tenants[0] if tenants else None
     site_map = {site.id: site.name for site in sites}
-    site_tz_map = {site.id: site.timezone for site in sites}
     site_tz_map = {site.id: site.timezone for site in sites}
     if _wants_json(request):
         limit, offset = _pagination_params(request)
@@ -1356,10 +1471,12 @@ def tenant_collectors(request: Request, tenant_id: int) -> HTMLResponse:
     )
 
 
-@router.get("/tenants/{tenant_id}/collectors/{collector_id}", response_class=HTMLResponse)
+@router.get(
+    "/tenants/{tenant_id}/collectors/{collector_id}", response_class=HTMLResponse
+)
 def tenant_collector_detail(
     request: Request, tenant_id: int, collector_id: int
-) -> HTMLResponse:
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
@@ -1446,21 +1563,34 @@ async def tenant_collector_update(
     labels: str | None = Form(None),
     capabilities: str | None = Form(None),
     allowed_scopes: str | None = Form(None),
-):
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
     wants_json = _wants_json(request)
-    if not name and not status and not site_id and not labels and not capabilities and not allowed_scopes:
+    if (
+        not name
+        and not status
+        and not site_id
+        and not labels
+        and not capabilities
+        and not allowed_scopes
+    ):
         try:
             payload = await request.json()
             name = payload.get("name") if payload else name
             status = payload.get("status") if payload else status
-            site_id = str(payload.get("site_id")) if payload and payload.get("site_id") is not None else site_id
+            site_id = (
+                str(payload.get("site_id"))
+                if payload and payload.get("site_id") is not None
+                else site_id
+            )
             labels = payload.get("labels") if payload else labels
             capabilities = payload.get("capabilities") if payload else capabilities
-            allowed_scopes = payload.get("allowed_scopes") if payload else allowed_scopes
-        except Exception:
+            allowed_scopes = (
+                payload.get("allowed_scopes") if payload else allowed_scopes
+            )
+        except (JSONDecodeError, ValueError, TypeError):
             pass
     parsed_site_id = int(site_id) if site_id else None
     with get_session() as session:
@@ -1483,11 +1613,22 @@ async def tenant_collector_update(
         if site_id is not None:
             collector.site_id = parsed_site_id
         if labels is not None:
-            collector.labels = labels.strip() or None
+            collector.labels = _parse_labels_value(labels)
         if capabilities is not None:
-            collector.capabilities = capabilities.strip() or None
+            collector.capabilities = _parse_capabilities_value(capabilities)
         if allowed_scopes is not None:
-            collector.allowed_scopes = allowed_scopes.strip() or None
+            collector.allowed_scopes = _parse_scopes_value(allowed_scopes)
+        log_security_event(
+            action="collector.update",
+            outcome="success",
+            actor_user_id=user.id,
+            details={
+                "collector_id": collector.id,
+                "tenant_id": tenant_id,
+                "status": collector.status,
+            },
+            session=session,
+        )
         log_audit(
             actor_user_id=user.id,
             action="collector.update",
@@ -1515,27 +1656,38 @@ async def tenant_schedule_create(
     network_ids: list[str] = Form(None),
     scan_types: list[str] = Form(None),
     priority: str | None = Form(None),
-):
-    user = None
+) -> WebResponse:
+    user: User | None
     if not allow_api_key_scope(request, "schedule:write"):
-        user = require_tenant_role(request, tenant_id, UserRole.scan_operator)
-        if not isinstance(user, User):
-            return user
+        user_or_response = require_tenant_role(request, tenant_id, UserRole.scan_operator)
+        if not isinstance(user_or_response, User):
+            return user_or_response
+        user = user_or_response
+    else:
+        user = None
 
     wants_json = _wants_json(request)
     payload = None
     if not start_date or not start_time:
         try:
             payload = await request.json()
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             payload = None
     if payload:
         name = payload.get("name") if payload else name
         start_at = payload.get("start_at")
-        site_id = str(payload.get("site_id")) if payload and payload.get("site_id") is not None else site_id
+        site_id = (
+            str(payload.get("site_id"))
+            if payload and payload.get("site_id") is not None
+            else site_id
+        )
         network_ids = payload.get("network_ids") if payload else network_ids
         scan_types = payload.get("scan_types") if payload else scan_types
-        priority = str(payload.get("priority")) if payload and payload.get("priority") is not None else priority
+        priority = (
+            str(payload.get("priority"))
+            if payload and payload.get("priority") is not None
+            else priority
+        )
     else:
         start_at = None
 
@@ -1555,19 +1707,23 @@ async def tenant_schedule_create(
 
     if start_at_dt is None:
         if wants_json:
-            return JSONResponse({"error": "Start date/time is required"}, status_code=400)
+            return JSONResponse(
+                {"error": "Start date/time is required"}, status_code=400
+            )
         return _redirect_with_message(
             f"/tenants/{tenant_id}/schedules",
             "Start date/time is required",
         )
     if start_at_dt.tzinfo is None:
-        start_at_dt = start_at_dt.replace(tzinfo=timezone.utc)
+        start_at_dt = start_at_dt.replace(tzinfo=UTC)
     else:
-        start_at_dt = start_at_dt.astimezone(timezone.utc)
+        start_at_dt = start_at_dt.astimezone(UTC)
 
     if not scan_types:
         if wants_json:
-            return JSONResponse({"error": "Select at least one scan type"}, status_code=400)
+            return JSONResponse(
+                {"error": "Select at least one scan type"}, status_code=400
+            )
         return _redirect_with_message(
             f"/tenants/{tenant_id}/schedules",
             "Select at least one scan type",
@@ -1575,7 +1731,9 @@ async def tenant_schedule_create(
 
     if not network_ids:
         if wants_json:
-            return JSONResponse({"error": "Select at least one network"}, status_code=400)
+            return JSONResponse(
+                {"error": "Select at least one network"}, status_code=400
+            )
         return _redirect_with_message(
             f"/tenants/{tenant_id}/schedules",
             "Select at least one network",
@@ -1621,7 +1779,10 @@ async def tenant_schedule_create(
             action="tenant.schedule.create",
             entity_type="scan_schedule",
             entity_id=schedule.id,
-            details={"name": schedule.name, "scheduled_at_utc": _format_dt(schedule.scheduled_at_utc)},
+            details={
+                "name": schedule.name,
+                "scheduled_at_utc": _format_dt(schedule.scheduled_at_utc),
+            },
             session=session,
         )
 
@@ -1644,7 +1805,7 @@ async def tenant_schedule_create(
 @router.get("/tenants/{tenant_id}/schedules/{schedule_id}", response_class=HTMLResponse)
 def tenant_schedule_detail(
     request: Request, tenant_id: int, schedule_id: int
-) -> HTMLResponse:
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.read_only)
     if not isinstance(user, User):
         return user
@@ -1653,7 +1814,9 @@ def tenant_schedule_detail(
         with get_session() as session:
             return (
                 session.query(ScanSchedule)
-                .filter(ScanSchedule.id == schedule_id, ScanSchedule.tenant_id == tenant_id)
+                .filter(
+                    ScanSchedule.id == schedule_id, ScanSchedule.tenant_id == tenant_id
+                )
                 .all()
             )
 
@@ -1686,6 +1849,7 @@ def tenant_schedule_detail(
     tenants, _ = _safe_query(fetch_tenant)
     tenant = tenants[0] if tenants else None
     site_map = {site.id: site.name for site in sites}
+    site_tz_map = {site.id: site.timezone for site in sites}
 
     if _wants_json(request):
         if not schedule:
@@ -1704,7 +1868,6 @@ def tenant_schedule_detail(
                     "finished_at_utc": _format_dt(schedule.finished_at_utc),
                     "site_id": schedule.site_id,
                     "site_name": site_map.get(schedule.site_id),
-                    "site_timezone": site_tz_map.get(schedule.site_id),
                     "site_timezone": site_tz_map.get(schedule.site_id),
                     "network_ids": _parse_csv(schedule.network_ids),
                     "scan_types": _parse_csv(schedule.scan_types),
@@ -1743,14 +1906,16 @@ def tenant_schedule_detail(
 
 
 @router.get("/tenants/{tenant_id}/exports", response_class=HTMLResponse)
-def tenant_exports(request: Request, tenant_id: int) -> HTMLResponse:
+def tenant_exports(request: Request, tenant_id: int) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.read_only)
     if not isinstance(user, User):
         return user
 
     def fetch_exports() -> Iterable[ExportSchedule]:
         with get_session() as session:
-            query = session.query(ExportSchedule).filter(ExportSchedule.tenant_id == tenant_id)
+            query = session.query(ExportSchedule).filter(
+                ExportSchedule.tenant_id == tenant_id
+            )
             site_filter = request.query_params.get("site_id")
             start_after = request.query_params.get("start_after")
             start_before = request.query_params.get("start_before")
@@ -1834,7 +1999,7 @@ def tenant_exports(request: Request, tenant_id: int) -> HTMLResponse:
 
 
 @router.get("/tenants/{tenant_id}/credentials", response_class=HTMLResponse)
-def tenant_credentials(request: Request, tenant_id: int) -> HTMLResponse:
+def tenant_credentials(request: Request, tenant_id: int) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
@@ -1917,7 +2082,7 @@ async def tenant_credential_set_create(
     name: str | None = Form(None),
     protocol: str | None = Form(None),
     vault_index: str | None = Form(None),
-):
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
@@ -1928,7 +2093,7 @@ async def tenant_credential_set_create(
             name = payload.get("name") if payload else name
             protocol = payload.get("protocol") if payload else protocol
             vault_index = str(payload.get("vault_index")) if payload else vault_index
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             protocol = None
     if not protocol:
         if wants_json:
@@ -1979,7 +2144,7 @@ async def tenant_credential_assignment_create(
     protocol: str | None = Form(None),
     credential_set_id: str | None = Form(None),
     priority: str | None = Form(None),
-):
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
@@ -1989,13 +2154,18 @@ async def tenant_credential_assignment_create(
             payload = await request.json()
             subnet_cidr = payload.get("subnet_cidr") if payload else subnet_cidr
             protocol = payload.get("protocol") if payload else protocol
-            credential_set_id = str(payload.get("credential_set_id")) if payload else credential_set_id
+            credential_set_id = (
+                str(payload.get("credential_set_id")) if payload else credential_set_id
+            )
             priority = str(payload.get("priority")) if payload else priority
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             subnet_cidr = subnet_cidr
     if not subnet_cidr or not protocol or not credential_set_id:
         if wants_json:
-            return JSONResponse({"error": "Subnet, protocol, and credential set are required"}, status_code=400)
+            return JSONResponse(
+                {"error": "Subnet, protocol, and credential set are required"},
+                status_code=400,
+            )
         return _redirect_with_message(
             f"/tenants/{tenant_id}/credentials",
             "Subnet, protocol, and credential set are required",
@@ -2021,7 +2191,9 @@ async def tenant_credential_assignment_create(
         parsed_priority = int(priority) if priority is not None else 0
     except ValueError:
         if wants_json:
-            return JSONResponse({"error": "Invalid credential_set_id or priority"}, status_code=400)
+            return JSONResponse(
+                {"error": "Invalid credential_set_id or priority"}, status_code=400
+            )
         return _redirect_with_message(
             f"/tenants/{tenant_id}/credentials",
             "Invalid credential set or priority",
@@ -2057,14 +2229,16 @@ async def tenant_credential_assignment_create(
     )
 
 
-@router.post("/tenants/{tenant_id}/credentials/sets/{set_id}/update", response_model=None)
+@router.post(
+    "/tenants/{tenant_id}/credentials/sets/{set_id}/update", response_model=None
+)
 async def tenant_credential_set_update(
     request: Request,
     tenant_id: int,
     set_id: int,
     name: str | None = Form(None),
     vault_index: str | None = Form(None),
-):
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
@@ -2074,7 +2248,7 @@ async def tenant_credential_set_update(
             payload = await request.json()
             name = payload.get("name") if payload else name
             vault_index = str(payload.get("vault_index")) if payload else vault_index
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             name = None
     try:
         parsed_index = int(vault_index) if vault_index is not None else None
@@ -2093,7 +2267,9 @@ async def tenant_credential_set_update(
         )
         if not entry:
             if wants_json:
-                return JSONResponse({"error": "Credential set not found"}, status_code=404)
+                return JSONResponse(
+                    {"error": "Credential set not found"}, status_code=404
+                )
             return _redirect_with_message(
                 f"/tenants/{tenant_id}/credentials",
                 "Credential set not found",
@@ -2118,12 +2294,14 @@ async def tenant_credential_set_update(
     )
 
 
-@router.post("/tenants/{tenant_id}/credentials/sets/{set_id}/delete", response_model=None)
+@router.post(
+    "/tenants/{tenant_id}/credentials/sets/{set_id}/delete", response_model=None
+)
 async def tenant_credential_set_delete(
     request: Request,
     tenant_id: int,
     set_id: int,
-):
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
@@ -2136,7 +2314,9 @@ async def tenant_credential_set_delete(
         )
         if not entry:
             if wants_json:
-                return JSONResponse({"error": "Credential set not found"}, status_code=404)
+                return JSONResponse(
+                    {"error": "Credential set not found"}, status_code=404
+                )
             return _redirect_with_message(
                 f"/tenants/{tenant_id}/credentials",
                 "Credential set not found",
@@ -2148,7 +2328,9 @@ async def tenant_credential_set_delete(
         )
         if assignment_count:
             if wants_json:
-                return JSONResponse({"error": "Credential set is in use"}, status_code=409)
+                return JSONResponse(
+                    {"error": "Credential set is in use"}, status_code=409
+                )
             return _redirect_with_message(
                 f"/tenants/{tenant_id}/credentials",
                 "Credential set is in use",
@@ -2182,21 +2364,31 @@ async def tenant_credential_assignment_update(
     protocol: str | None = Form(None),
     credential_set_id: str | None = Form(None),
     priority: str | None = Form(None),
-):
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
     wants_json = _wants_json(request)
-    if subnet_cidr is None and protocol is None and credential_set_id is None and priority is None:
+    if (
+        subnet_cidr is None
+        and protocol is None
+        and credential_set_id is None
+        and priority is None
+    ):
         try:
             payload = await request.json()
             subnet_cidr = payload.get("subnet_cidr") if payload else subnet_cidr
             protocol = payload.get("protocol") if payload else protocol
-            credential_set_id = str(payload.get("credential_set_id")) if payload else credential_set_id
+            credential_set_id = (
+                str(payload.get("credential_set_id")) if payload else credential_set_id
+            )
             priority = str(payload.get("priority")) if payload else priority
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             priority = None
-    if protocol is not None and protocol.strip().lower() not in _ALLOWED_CREDENTIAL_PROTOCOLS:
+    if (
+        protocol is not None
+        and protocol.strip().lower() not in _ALLOWED_CREDENTIAL_PROTOCOLS
+    ):
         if wants_json:
             return JSONResponse({"error": "Invalid protocol"}, status_code=400)
         return _redirect_with_message(
@@ -2214,11 +2406,15 @@ async def tenant_credential_assignment_update(
                 "Invalid subnet CIDR",
             )
     try:
-        parsed_set_id = int(credential_set_id) if credential_set_id is not None else None
+        parsed_set_id = (
+            int(credential_set_id) if credential_set_id is not None else None
+        )
         parsed_priority = int(priority) if priority is not None else None
     except ValueError:
         if wants_json:
-            return JSONResponse({"error": "Invalid credential_set_id or priority"}, status_code=400)
+            return JSONResponse(
+                {"error": "Invalid credential_set_id or priority"}, status_code=400
+            )
         return _redirect_with_message(
             f"/tenants/{tenant_id}/credentials",
             "Invalid credential set or priority",
@@ -2226,7 +2422,10 @@ async def tenant_credential_assignment_update(
     with get_session() as session:
         entry = (
             session.query(CredentialAssignment)
-            .filter(CredentialAssignment.id == assignment_id, CredentialAssignment.tenant_id == tenant_id)
+            .filter(
+                CredentialAssignment.id == assignment_id,
+                CredentialAssignment.tenant_id == tenant_id,
+            )
             .one_or_none()
         )
         if not entry:
@@ -2273,7 +2472,7 @@ async def tenant_credential_assignment_delete(
     request: Request,
     tenant_id: int,
     assignment_id: int,
-):
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
@@ -2281,7 +2480,10 @@ async def tenant_credential_assignment_delete(
     with get_session() as session:
         entry = (
             session.query(CredentialAssignment)
-            .filter(CredentialAssignment.id == assignment_id, CredentialAssignment.tenant_id == tenant_id)
+            .filter(
+                CredentialAssignment.id == assignment_id,
+                CredentialAssignment.tenant_id == tenant_id,
+            )
             .one_or_none()
         )
         if not entry:
@@ -2318,23 +2520,30 @@ async def tenant_export_schedule_create(
     site_id: str | None = Form(None),
     exporter: str | None = Form(None),
     settings_json: str | None = Form(None),
-):
-    user = None
+) -> WebResponse:
+    user: User | None
     if not allow_api_key_scope(request, "export:schedule"):
-        user = require_tenant_role(request, tenant_id, UserRole.scan_operator)
-        if not isinstance(user, User):
-            return user
+        user_or_response = require_tenant_role(request, tenant_id, UserRole.scan_operator)
+        if not isinstance(user_or_response, User):
+            return user_or_response
+        user = user_or_response
+    else:
+        user = None
     wants_json = _wants_json(request)
     payload = None
     if not start_date or not start_time:
         try:
             payload = await request.json()
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             payload = None
     if payload:
         name = payload.get("name") if payload else name
         start_at = payload.get("start_at")
-        site_id = str(payload.get("site_id")) if payload and payload.get("site_id") is not None else site_id
+        site_id = (
+            str(payload.get("site_id"))
+            if payload and payload.get("site_id") is not None
+            else site_id
+        )
         exporter = payload.get("exporter") if payload else exporter
         if isinstance(payload, dict) and payload.get("settings"):
             settings_json = json.dumps(payload.get("settings"))
@@ -2359,15 +2568,17 @@ async def tenant_export_schedule_create(
 
     if start_at_dt is None:
         if wants_json:
-            return JSONResponse({"error": "Start date/time is required"}, status_code=400)
+            return JSONResponse(
+                {"error": "Start date/time is required"}, status_code=400
+            )
         return _redirect_with_message(
             f"/tenants/{tenant_id}/exports",
             "Start date/time is required",
         )
     if start_at_dt.tzinfo is None:
-        start_at_dt = start_at_dt.replace(tzinfo=timezone.utc)
+        start_at_dt = start_at_dt.replace(tzinfo=UTC)
     else:
-        start_at_dt = start_at_dt.astimezone(timezone.utc)
+        start_at_dt = start_at_dt.astimezone(UTC)
 
     exporter = (exporter or "").strip()
     if not exporter:
@@ -2413,7 +2624,10 @@ async def tenant_export_schedule_create(
             action="tenant.export.schedule.create",
             entity_type="export_schedule",
             entity_id=schedule.id,
-            details={"exporter": exporter, "scheduled_at_utc": _format_dt(schedule.scheduled_at_utc)},
+            details={
+                "exporter": exporter,
+                "scheduled_at_utc": _format_dt(schedule.scheduled_at_utc),
+            },
             session=session,
         )
 
@@ -2441,23 +2655,28 @@ async def tenant_export_run(
     export_schedule_id: str | None = Form(None),
     site_id: str | None = Form(None),
     settings_json: str | None = Form(None),
-):
-    user = None
+) -> WebResponse:
+    user: User | None
     if not allow_api_key_scope(request, "export:run"):
-        user = require_tenant_role(request, tenant_id, UserRole.scan_operator)
-        if not isinstance(user, User):
-            return user
+        user_or_response = require_tenant_role(request, tenant_id, UserRole.scan_operator)
+        if not isinstance(user_or_response, User):
+            return user_or_response
+        user = user_or_response
+    else:
+        user = None
     wants_json = _wants_json(request)
     if not exporter:
         try:
             payload = await request.json()
             exporter = payload.get("exporter") if payload else None
-            export_schedule_id = payload.get("export_schedule_id") if payload else export_schedule_id
+            export_schedule_id = (
+                payload.get("export_schedule_id") if payload else export_schedule_id
+            )
             site_id = payload.get("site_id") if payload else site_id
             settings_json = payload.get("settings_json") if payload else settings_json
             if isinstance(payload, dict) and payload.get("settings"):
                 settings_json = json.dumps(payload.get("settings"))
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             exporter = None
     exporter = (exporter or "netbox").strip()
     if not exporter:
@@ -2519,12 +2738,15 @@ async def tenant_schedule_update_status(
     schedule_id: int,
     actual_start_at_utc: str | None = Form(None),
     finished_at_utc: str | None = Form(None),
-):
-    user = None
+) -> WebResponse:
+    user: User | None
     if not allow_collector_token(request):
-        user = require_tenant_role(request, tenant_id, UserRole.read_write)
-        if not isinstance(user, User):
-            return user
+        user_or_response = require_tenant_role(request, tenant_id, UserRole.read_write)
+        if not isinstance(user_or_response, User):
+            return user_or_response
+        user = user_or_response
+    else:
+        user = None
     wants_json = _wants_json(request)
     if not actual_start_at_utc and not finished_at_utc:
         try:
@@ -2532,10 +2754,10 @@ async def tenant_schedule_update_status(
             actual_start_at_utc = (
                 payload.get("actual_start_at_utc") if payload else None
             ) or (payload.get("actual_start_at") if payload else None)
-            finished_at_utc = (
-                payload.get("finished_at_utc") if payload else None
-            ) or (payload.get("finished_at") if payload else None)
-        except Exception:
+            finished_at_utc = (payload.get("finished_at_utc") if payload else None) or (
+                payload.get("finished_at") if payload else None
+            )
+        except (JSONDecodeError, ValueError, TypeError):
             actual_start_at_utc = None
             finished_at_utc = None
 
@@ -2547,14 +2769,16 @@ async def tenant_schedule_update_status(
         except ValueError:
             return None
         if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
 
     actual_dt = parse_dt(actual_start_at_utc)
     finished_dt = parse_dt(finished_at_utc)
     if actual_start_at_utc and actual_dt is None:
         if wants_json:
-            return JSONResponse({"error": "Invalid actual_start_at_utc"}, status_code=400)
+            return JSONResponse(
+                {"error": "Invalid actual_start_at_utc"}, status_code=400
+            )
         return _redirect_with_message(
             f"/tenants/{tenant_id}/schedules/{schedule_id}",
             "Invalid actual_start_at_utc",
@@ -2601,7 +2825,9 @@ async def tenant_schedule_update_status(
             {
                 "status": "updated",
                 "schedule_id": schedule_id,
-                "actual_start_at_utc": _format_dt(actual_dt or schedule.actual_start_at_utc),
+                "actual_start_at_utc": _format_dt(
+                    actual_dt or schedule.actual_start_at_utc
+                ),
                 "finished_at_utc": _format_dt(finished_dt or schedule.finished_at_utc),
             }
         )
@@ -2622,12 +2848,15 @@ async def tenant_schedule_type_update_status(
     type_id: int,
     actual_start_at_utc: str | None = Form(None),
     finished_at_utc: str | None = Form(None),
-):
-    user = None
+) -> WebResponse:
+    user: User | None
     if not allow_collector_token(request):
-        user = require_tenant_role(request, tenant_id, UserRole.read_write)
-        if not isinstance(user, User):
-            return user
+        user_or_response = require_tenant_role(request, tenant_id, UserRole.read_write)
+        if not isinstance(user_or_response, User):
+            return user_or_response
+        user = user_or_response
+    else:
+        user = None
     wants_json = _wants_json(request)
     if not actual_start_at_utc and not finished_at_utc:
         try:
@@ -2635,10 +2864,10 @@ async def tenant_schedule_type_update_status(
             actual_start_at_utc = (
                 payload.get("actual_start_at_utc") if payload else None
             ) or (payload.get("actual_start_at") if payload else None)
-            finished_at_utc = (
-                payload.get("finished_at_utc") if payload else None
-            ) or (payload.get("finished_at") if payload else None)
-        except Exception:
+            finished_at_utc = (payload.get("finished_at_utc") if payload else None) or (
+                payload.get("finished_at") if payload else None
+            )
+        except (JSONDecodeError, ValueError, TypeError):
             actual_start_at_utc = None
             finished_at_utc = None
 
@@ -2650,14 +2879,16 @@ async def tenant_schedule_type_update_status(
         except ValueError:
             return None
         if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
 
     actual_dt = parse_dt(actual_start_at_utc)
     finished_dt = parse_dt(finished_at_utc)
     if actual_start_at_utc and actual_dt is None:
         if wants_json:
-            return JSONResponse({"error": "Invalid actual_start_at_utc"}, status_code=400)
+            return JSONResponse(
+                {"error": "Invalid actual_start_at_utc"}, status_code=400
+            )
         return _redirect_with_message(
             f"/tenants/{tenant_id}/schedules/{schedule_id}",
             "Invalid actual_start_at_utc",
@@ -2693,7 +2924,9 @@ async def tenant_schedule_type_update_status(
         )
         if not entry:
             if wants_json:
-                return JSONResponse({"error": "Scan type entry not found"}, status_code=404)
+                return JSONResponse(
+                    {"error": "Scan type entry not found"}, status_code=404
+                )
             return _redirect_with_message(
                 f"/tenants/{tenant_id}/schedules/{schedule_id}",
                 "Scan type entry not found",
@@ -2720,7 +2953,9 @@ async def tenant_schedule_type_update_status(
             {
                 "status": "updated",
                 "type_id": type_id,
-                "actual_start_at_utc": _format_dt(actual_dt or entry.actual_start_at_utc),
+                "actual_start_at_utc": _format_dt(
+                    actual_dt or entry.actual_start_at_utc
+                ),
                 "finished_at_utc": _format_dt(finished_dt or entry.finished_at_utc),
             }
         )
@@ -2728,6 +2963,7 @@ async def tenant_schedule_type_update_status(
         f"/tenants/{tenant_id}/schedules/{schedule_id}",
         "Scan type updated",
     )
+
 
 @router.post("/tenants/{tenant_id}/users", response_model=None)
 async def tenant_user_add(
@@ -2737,7 +2973,7 @@ async def tenant_user_add(
     full_name: str | None = Form(None),
     password: str | None = Form(None),
     roles: list[str] = Form(None),
-):
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
@@ -2750,7 +2986,7 @@ async def tenant_user_add(
             full_name = payload.get("full_name") if payload else full_name
             password = payload.get("password") if payload else password
             roles = payload.get("roles") if payload else roles
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             email = None
     if not email:
         if wants_json:
@@ -2818,12 +3054,26 @@ async def tenant_user_add(
                     roles=",".join(sorted({r.value for r in role_set})),
                 )
             )
+        log_security_event(
+            action="tenant.user.add_or_update",
+            outcome="success",
+            actor_user_id=user.id,
+            details={
+                "tenant_id": tenant_id,
+                "user_id": account.id,
+                "roles": sorted([r.value for r in role_set]),
+            },
+            session=session,
+        )
         log_audit(
             actor_user_id=user.id,
             action="tenant.user.add",
             entity_type="tenant",
             entity_id=tenant_id,
-            details={"user": account.email, "roles": sorted([r.value for r in role_set])},
+            details={
+                "user": account.email,
+                "roles": sorted([r.value for r in role_set]),
+            },
             session=session,
         )
     if wants_json:
@@ -2842,8 +3092,11 @@ async def tenant_user_add(
 
 @router.post("/tenants/{tenant_id}/users/{membership_id}/role", response_model=None)
 async def tenant_user_update_role(
-    request: Request, tenant_id: int, membership_id: int, roles: list[str] = Form(None)
-):
+    request: Request,
+    tenant_id: int,
+    membership_id: int,
+    roles: list[str] | None = Form(None),
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
@@ -2853,7 +3106,7 @@ async def tenant_user_update_role(
         try:
             payload = await request.json()
             roles = payload.get("roles") if payload else roles
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             roles = None
     if not roles:
         if wants_json:
@@ -2918,7 +3171,7 @@ async def tenant_user_update_role(
 @router.post("/tenants/{tenant_id}/users/{membership_id}/delete", response_model=None)
 def tenant_user_delete(
     request: Request, tenant_id: int, membership_id: int
-):
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
@@ -2938,6 +3191,16 @@ def tenant_user_delete(
                 "Membership not found",
             )
         session.delete(membership)
+        log_security_event(
+            action="tenant.user.remove",
+            outcome="success",
+            actor_user_id=user.id,
+            details={
+                "tenant_id": tenant_id,
+                "membership_id": membership_id,
+            },
+            session=session,
+        )
         log_audit(
             actor_user_id=user.id,
             action="tenant.user.remove",
@@ -2956,8 +3219,11 @@ def tenant_user_delete(
 
 @router.post("/tenants/{tenant_id}/users/{membership_id}/password", response_model=None)
 async def tenant_user_reset_password(
-    request: Request, tenant_id: int, membership_id: int, password: str | None = Form(None)
-):
+    request: Request,
+    tenant_id: int,
+    membership_id: int,
+    password: str | None = Form(None),
+) -> WebResponse:
     user = require_tenant_role(request, tenant_id, UserRole.user_admin)
     if not isinstance(user, User):
         return user
@@ -2971,7 +3237,7 @@ async def tenant_user_reset_password(
         try:
             payload = await request.json()
             password = payload.get("password") if payload else None
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             password = None
     if not password or not password.strip():
         if wants_json:
@@ -2995,6 +3261,17 @@ async def tenant_user_reset_password(
                 "Membership not found",
             )
         membership.user.password_hash = hash_password(password)
+        log_security_event(
+            action="user.password_reset",
+            outcome="success",
+            actor_user_id=request.session.get("user_id"),
+            details={
+                "target_user_id": membership.user.id,
+                "tenant_id": tenant_id,
+                "ip": request.client.host if request.client else None,
+            },
+            session=session,
+        )
         log_audit(
             actor_user_id=user.id,
             action="tenant.user.password_reset",
@@ -3012,7 +3289,7 @@ async def tenant_user_reset_password(
 
 
 @router.get("/oidc/callback", response_model=None)
-async def oidc_callback(request: Request):
+async def oidc_callback(request: Request) -> WebResponse:
     if not oidc_enabled():
         return HTMLResponse(content="OIDC not configured", status_code=400)
     oauth = get_oauth()
@@ -3038,7 +3315,7 @@ async def oidc_callback(request: Request):
 
 
 @router.get("/admin/tenants", response_class=HTMLResponse)
-def admin_tenants(request: Request) -> HTMLResponse:
+def admin_tenants(request: Request) -> WebResponse:
     user = require_superadmin(request)
     if not isinstance(user, User):
         return user
@@ -3087,7 +3364,7 @@ def admin_tenants(request: Request) -> HTMLResponse:
 
 
 @router.get("/admin/schedules", response_class=HTMLResponse)
-def admin_schedules(request: Request) -> HTMLResponse:
+def admin_schedules(request: Request) -> WebResponse:
     user = require_superadmin(request)
     if not isinstance(user, User):
         return user
@@ -3105,7 +3382,9 @@ def admin_schedules(request: Request) -> HTMLResponse:
                 except ValueError:
                     pass
             if scan_type_filter:
-                query = query.filter(ScanSchedule.scan_types.ilike(f"%{scan_type_filter}%"))
+                query = query.filter(
+                    ScanSchedule.scan_types.ilike(f"%{scan_type_filter}%")
+                )
             if start_after:
                 query = query.filter(ScanSchedule.scheduled_at_utc >= start_after)
             if start_before:
@@ -3137,8 +3416,8 @@ def admin_schedules(request: Request) -> HTMLResponse:
                         "tenant_id": schedule.tenant_id,
                         "tenant_name": tenant_map.get(schedule.tenant_id),
                         "site_id": schedule.site_id,
-                        "site_name": site_map.get(schedule.site_id).name if schedule.site_id in site_map else None,
-                        "site_timezone": site_map.get(schedule.site_id).timezone if schedule.site_id in site_map else None,
+                        "site_name": (site.name if (site := site_map.get(schedule.site_id)) else None),
+                        "site_timezone": (site.timezone if site else None),
                         "name": schedule.name,
                         "scheduled_at_utc": _format_dt(schedule.scheduled_at_utc),
                         "not_before_utc": _format_dt(schedule.not_before_utc),
@@ -3174,7 +3453,7 @@ async def admin_tenant_create(
     description: str | None = Form(None),
     default_scanner: str | None = Form(None),
     default_scan_interval_minutes: str | None = Form(None),
-):
+) -> WebResponse:
     user = require_superadmin(request)
     if not isinstance(user, User):
         return user
@@ -3184,20 +3463,28 @@ async def admin_tenant_create(
             payload = await request.json()
             name = payload.get("name") if payload else None
             description = payload.get("description") if payload else description
-            default_scanner = payload.get("default_scanner") if payload else default_scanner
+            default_scanner = (
+                payload.get("default_scanner") if payload else default_scanner
+            )
             default_scan_interval_minutes = (
                 str(payload.get("default_scan_interval_minutes"))
                 if payload and payload.get("default_scan_interval_minutes") is not None
                 else default_scan_interval_minutes
             )
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             name = None
     if not name:
         if wants_json:
             return JSONResponse({"error": "Name is required"}, status_code=400)
-        return RedirectResponse(url="/admin/tenants?message=Name%20is%20required", status_code=302)
+        return RedirectResponse(
+            url="/admin/tenants?message=Name%20is%20required", status_code=302
+        )
     with get_session() as session:
-        interval = int(default_scan_interval_minutes) if default_scan_interval_minutes else None
+        interval = (
+            int(default_scan_interval_minutes)
+            if default_scan_interval_minutes
+            else None
+        )
         tenant = Tenant(
             name=name.strip(),
             description=(description or "").strip() or None,
@@ -3206,6 +3493,16 @@ async def admin_tenant_create(
         )
         session.add(tenant)
         session.flush()
+        log_security_event(
+            action="tenant.create",
+            outcome="success",
+            actor_user_id=request.session.get("user_id"),
+            details={
+                "tenant_id": tenant.id,
+                "tenant_name": tenant.name,
+            },
+            session=session,
+        )
         session.add(
             TenantUser(
                 tenant_id=tenant.id,
@@ -3230,7 +3527,7 @@ async def admin_tenant_create(
 
 
 @router.get("/admin/tenants/{tenant_id}", response_class=HTMLResponse)
-def admin_tenant_edit(request: Request, tenant_id: int) -> HTMLResponse:
+def admin_tenant_edit(request: Request, tenant_id: int) -> WebResponse:
     user = require_superadmin(request)
     if not isinstance(user, User):
         return user
@@ -3271,7 +3568,7 @@ async def admin_tenant_update(
     description: str | None = Form(None),
     default_scanner: str | None = Form(None),
     default_scan_interval_minutes: str | None = Form(None),
-):
+) -> WebResponse:
     user = require_superadmin(request)
     if not isinstance(user, User):
         return user
@@ -3281,18 +3578,22 @@ async def admin_tenant_update(
             payload = await request.json()
             name = payload.get("name") if payload else None
             description = payload.get("description") if payload else description
-            default_scanner = payload.get("default_scanner") if payload else default_scanner
+            default_scanner = (
+                payload.get("default_scanner") if payload else default_scanner
+            )
             default_scan_interval_minutes = (
                 str(payload.get("default_scan_interval_minutes"))
                 if payload and payload.get("default_scan_interval_minutes") is not None
                 else default_scan_interval_minutes
             )
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             name = None
     if not name:
         if wants_json:
             return JSONResponse({"error": "Name is required"}, status_code=400)
-        return RedirectResponse(url="/admin/tenants?message=Name%20is%20required", status_code=302)
+        return RedirectResponse(
+            url="/admin/tenants?message=Name%20is%20required", status_code=302
+        )
     with get_session() as session:
         tenant = session.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
         if not tenant:
@@ -3303,7 +3604,19 @@ async def admin_tenant_update(
         tenant.description = (description or "").strip() or None
         tenant.default_scanner = (default_scanner or "").strip() or None
         tenant.default_scan_interval_minutes = (
-            int(default_scan_interval_minutes) if default_scan_interval_minutes else None
+            int(default_scan_interval_minutes)
+            if default_scan_interval_minutes
+            else None
+        )
+        log_security_event(
+            action="tenant.update",
+            outcome="success",
+            actor_user_id=request.session.get("user_id"),
+            details={
+                "tenant_id": tenant.id,
+                "tenant_name": tenant.name,
+            },
+            session=session,
         )
         log_audit(
             actor_user_id=user.id,
@@ -3325,7 +3638,7 @@ async def admin_tenant_delete(
     request: Request,
     tenant_id: int,
     confirm_name: str | None = Form(None),
-):
+) -> WebResponse:
     user = require_superadmin(request)
     if not isinstance(user, User):
         return user
@@ -3333,7 +3646,7 @@ async def admin_tenant_delete(
         try:
             payload = await request.json()
             confirm_name = (payload or {}).get("confirm_name")
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             confirm_name = None
     wants_json = "application/json" in request.headers.get("accept", "")
     with get_session() as session:
@@ -3343,6 +3656,19 @@ async def admin_tenant_delete(
                 return JSONResponse({"error": "Tenant not found"}, status_code=404)
             return HTMLResponse(content="Tenant not found", status_code=404)
         if not confirm_name or confirm_name.strip() != tenant.name:
+            log_security_event(
+                action="tenant.delete",
+                outcome="denied",
+                actor_user_id=request.session.get("user_id"),
+                details={
+                    "tenant_id": tenant.id,
+                    "tenant_name": tenant.name,
+                    "reason": "confirm_name_mismatch",
+                    "path": request.url.path,
+                    "ip": request.client.host if request.client else None,
+                },
+                session=session,
+            )
             if wants_json:
                 return JSONResponse(
                     {"error": "Tenant name confirmation does not match"},
@@ -3352,6 +3678,17 @@ async def admin_tenant_delete(
                 url="/admin/tenants?message=Tenant%20name%20confirmation%20does%20not%20match",
                 status_code=302,
             )
+        log_security_event(
+            action="tenant.delete",
+            outcome="success",
+            actor_user_id=request.session.get("user_id"),
+            details={
+                "tenant_id": tenant.id,
+                "tenant_name": tenant.name,
+                "ip": request.client.host if request.client else None,
+            },
+            session=session,
+        )
         membership_count = (
             session.query(TenantUser).filter(TenantUser.tenant_id == tenant_id).count()
         )
@@ -3383,7 +3720,7 @@ async def admin_tenant_delete(
 
 
 @router.post("/admin/tenants/{tenant_id}/add-me", response_model=None)
-def admin_tenant_add_me(request: Request, tenant_id: int):
+def admin_tenant_add_me(request: Request, tenant_id: int) -> WebResponse:
     user = require_superadmin(request)
     if not isinstance(user, User):
         return user
@@ -3419,7 +3756,7 @@ def admin_tenant_add_me(request: Request, tenant_id: int):
 
 
 @router.get("/admin/users", response_class=HTMLResponse)
-def admin_users(request: Request) -> HTMLResponse:
+def admin_users(request: Request) -> WebResponse:
     user = require_superadmin(request)
     if not isinstance(user, User):
         return user
@@ -3432,7 +3769,9 @@ def admin_users(request: Request) -> HTMLResponse:
             if email_filter:
                 query = query.filter(User.email.ilike(f"%{email_filter}%"))
             if superadmin_filter in {"true", "false"}:
-                query = query.filter(User.is_superadmin == (superadmin_filter == "true"))
+                query = query.filter(
+                    User.is_superadmin == (superadmin_filter == "true")
+                )
             query = query.order_by(User.email)
             query, _, _ = _paginate_query(query, request)
             return query.all()
@@ -3471,7 +3810,7 @@ async def admin_user_update_flags(
     user_id: int,
     is_superadmin: str | None = Form(None),
     is_auditor: str | None = Form(None),
-):
+) -> WebResponse:
     user = require_superadmin(request)
     if not isinstance(user, User):
         return user
@@ -3481,7 +3820,7 @@ async def admin_user_update_flags(
             payload = await request.json()
             is_superadmin = str(payload.get("is_superadmin")) if payload else None
             is_auditor = str(payload.get("is_auditor")) if payload else None
-        except Exception:
+        except (JSONDecodeError, ValueError, TypeError):
             is_superadmin = None
             is_auditor = None
     superadmin_value = True if is_superadmin in {"true", "1", "yes", "on"} else False
@@ -3494,12 +3833,26 @@ async def admin_user_update_flags(
             return _redirect_with_message("/admin/users", "User not found")
         target.is_superadmin = superadmin_value
         target.is_auditor = auditor_value
+        log_security_event(
+            action="user.flags_update",
+            outcome="success",
+            actor_user_id=request.session.get("user_id"),
+            details={
+                "target_user_id": target.id,
+                "is_superadmin": target.is_superadmin,
+                "is_auditor": target.is_auditor,
+            },
+            session=session,
+        )
         log_audit(
             actor_user_id=user.id,
             action="admin.user.flags",
             entity_type="user",
             entity_id=target.id,
-            details={"is_superadmin": target.is_superadmin, "is_auditor": target.is_auditor},
+            details={
+                "is_superadmin": target.is_superadmin,
+                "is_auditor": target.is_auditor,
+            },
             session=session,
         )
     if wants_json:
@@ -3515,7 +3868,7 @@ async def admin_user_update_flags(
 
 
 @router.get("/admin/audit", response_class=HTMLResponse)
-def admin_audit(request: Request) -> HTMLResponse:
+def admin_audit(request: Request) -> WebResponse:
     user = require_superadmin(request)
     if not isinstance(user, User):
         return user
@@ -3560,8 +3913,12 @@ def admin_audit(request: Request) -> HTMLResponse:
                     {
                         "id": entry.id,
                         "actor_user_id": entry.actor_user_id,
-                        "actor_email": (user_map.get(entry.actor_user_id) or {}).get("email"),
-                        "actor_name": (user_map.get(entry.actor_user_id) or {}).get("full_name"),
+                        "actor_email": (user_map.get(entry.actor_user_id) or {}).get(
+                            "email"
+                        ),
+                        "actor_name": (user_map.get(entry.actor_user_id) or {}).get(
+                            "full_name"
+                        ),
                         "action": entry.action,
                         "entity_type": entry.entity_type,
                         "entity_id": entry.entity_id,

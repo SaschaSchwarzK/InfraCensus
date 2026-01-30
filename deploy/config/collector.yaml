@@ -1,0 +1,36 @@
+central_url: "https://central.infracensus.local"
+enrollment_token: null
+collector_name: "collector"
+collector_labels: ""
+capabilities: ""
+poll_interval_seconds: 30
+backoff_multiplier: 2.0
+max_backoff_seconds: 300
+storage_path: "/collector/data"
+certs_path: "/collector/certs"
+verify_ssl: true
+timeout_seconds: 30
+log_level: "INFO"
+cert_renewal_days: 7
+max_concurrent_jobs: 5
+max_job_queue: 100
+health_host: "0.0.0.0"
+health_port: 8080
+api_max_retries: 3
+api_backoff_seconds: 0.5
+api_circuit_breaker_threshold: 5
+api_circuit_breaker_cooldown: 30
+collector_version: "unknown"
+collector_build: "unknown"
+clock_skew_warn_seconds: 60
+vault_addr: null
+vault_token: null
+vault_kv_mount: "secret"
+vault_namespace: null
+vault_cache_ttl_seconds: 300
+job_state_cleanup_interval_seconds: 3600
+job_queue_join_timeout_seconds: 10
+health_request_timeout_seconds: 5
+backends:
+  scanner_registry:
+    enabled: true

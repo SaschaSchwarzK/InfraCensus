@@ -1,0 +1,55 @@
+openapi: 3.0.3
+info:
+  title: InfraCensus Collector Health API
+  version: "0.1.0"
+  description: Health and metrics endpoints exposed by the collector agent.
+servers:
+  - url: http://localhost:8080
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Returns a simple OK response if the collector is running.
+      responses:
+        "200":
+          description: Collector is healthy
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      description: Prometheus-formatted metrics for the collector.
+      responses:
+        "200":
+          description: Metrics payload
+          content:
+            text/plain:
+              schema:
+                type: string
+        "503":
+          description: Collector is unhealthy or circuit breaker is open
+          content:
+            text/plain:
+              schema:
+                type: string
+  /ready:
+    get:
+      summary: Readiness check
+      description: Returns 200 when the collector is enrolled and ready to serve.
+      responses:
+        "200":
+          description: Collector is ready
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+        "503":
+          description: Collector is not ready
+          content:
+            text/plain:
+              schema:
+                type: string

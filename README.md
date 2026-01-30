@@ -24,9 +24,36 @@ Collector (separate terminal):
 poetry run scripts/run_collector.sh
 ```
 
+## Configuration
+
+InfraCensus supports configuration via environment variables, YAML files, or Git-backed YAML.
+
+### YAML (Local)
+
+- Central: set `CENTRAL_CONFIG_FILE=deploy/config/central.yaml`
+- Collector: set `COLLECTOR_CONFIG_FILE=deploy/config/collector.yaml`
+
+Example configs live in `deploy/config/central.yaml` and `deploy/config/collector.yaml`.
+
+### Git (Optional)
+
+- Central: set `CENTRAL_CONFIG_GIT_URL`, `CENTRAL_CONFIG_GIT_REF`, and `CENTRAL_CONFIG_GIT_PATH`
+- Collector: set `COLLECTOR_CONFIG_GIT_URL`, `COLLECTOR_CONFIG_GIT_REF`, and `COLLECTOR_CONFIG_GIT_PATH`
+
+By default the central API polls for changes every 60 seconds when Git config is enabled.
+Override polling with `CONFIG_POLL_SECONDS`.
+
+### Docker
+
+The Docker images include example configs at `/app/config/central.yaml` and `/app/config/collector.yaml`.
+
+### Security Notes
+
+- In non-dev environments, `SESSION_SECRET` must be set and at least 32 characters.
+- Set `REQUIRE_VAULT=true` to enforce Vault-backed credentials.
+
 ## Docker Compose
 
 ```bash
 docker compose up --build
 ```
-

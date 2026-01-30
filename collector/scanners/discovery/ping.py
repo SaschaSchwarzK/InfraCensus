@@ -12,7 +12,9 @@ class PingScanner(BaseScanner):
     name = "ping"
     required_tools = ["ping"]
 
-    async def scan(self, targets: list[str], params: dict[str, Any]) -> list[ScanResult]:
+    async def scan(
+        self, targets: list[str], params: dict[str, Any]
+    ) -> list[ScanResult]:
         results = []
         timeout = int(params.get("timeout", 5))
         for target in targets:

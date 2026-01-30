@@ -1,26 +1,56 @@
+from __future__ import annotations
+
+import logging
+import threading
+
 from sqlalchemy import create_engine
-from sqlalchemy.pool import NullPool
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 
-from central.core.config import settings
+from central.core.config import Settings, register_settings_listener, settings
+
+_engine_lock = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
-engine_kwargs = {"future": True}
-if settings.database_url.startswith("sqlite"):
-    engine_kwargs["connect_args"] = {"check_same_thread": False}
-    engine_kwargs["poolclass"] = NullPool
-else:
-    engine_kwargs["pool_size"] = settings.db_pool_size
-    engine_kwargs["max_overflow"] = settings.db_max_overflow
-    engine_kwargs["pool_timeout"] = settings.db_pool_timeout
-    engine_kwargs["pool_recycle"] = settings.db_pool_recycle
-    engine_kwargs["pool_pre_ping"] = settings.db_pool_pre_ping
+def _build_engine(current: Settings) -> tuple[Engine, sessionmaker]:
+    engine_kwargs = {"future": True}
+    if current.database_url.startswith("sqlite"):
+        engine_kwargs["connect_args"] = {"check_same_thread": False}
+        engine_kwargs["poolclass"] = NullPool
+    else:
+        engine_kwargs["pool_size"] = current.db_pool_size
+        engine_kwargs["max_overflow"] = current.db_max_overflow
+        engine_kwargs["pool_timeout"] = current.db_pool_timeout
+        engine_kwargs["pool_recycle"] = current.db_pool_recycle
+        engine_kwargs["pool_pre_ping"] = current.db_pool_pre_ping
+    new_engine = create_engine(current.database_url, **engine_kwargs)
+    new_session = sessionmaker(
+        bind=new_engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+        future=True,
+    )
+    return new_engine, new_session
 
-engine = create_engine(settings.database_url, **engine_kwargs)
-SessionLocal = sessionmaker(
-    bind=engine,
-    autoflush=False,
-    autocommit=False,
-    expire_on_commit=False,
-    future=True,
-)
+
+engine, SessionLocal = _build_engine(settings)
+
+
+def _apply_settings(new_settings: Settings) -> None:
+    global engine, SessionLocal
+    new_engine, new_session = _build_engine(new_settings)
+    with _engine_lock:
+        old_engine = engine
+        engine = new_engine
+        SessionLocal = new_session
+    try:
+        old_engine.dispose()
+    except (SQLAlchemyError, OSError) as exc:
+        logger.warning("db.engine_dispose_failed", error=str(exc))
+
+
+register_settings_listener(_apply_settings)

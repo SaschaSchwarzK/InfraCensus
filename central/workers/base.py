@@ -4,66 +4,70 @@ import hashlib
 import json
 import logging
 import os
-from datetime import datetime, timezone
+import time
+from datetime import UTC, datetime
 from typing import Any
 
 from celery import Task
 
+from central.core.logging import (
+    configure_logging,
+    log_error,
+    log_info,
+    log_warning,
+    set_trace_id,
+)
 from central.db.session import get_session
 
 try:
-    from central.db.models import TaskFailureLog, PermanentFailure
-except Exception:  # pragma: no cover - optional model
+    from central.db.models import PermanentFailure, TaskFailureLog
+except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional model
     TaskFailureLog = None
     PermanentFailure = None
 
 try:
     import structlog
-except Exception:  # pragma: no cover - optional dependency
+except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional dependency
     structlog = None
 
 try:
     from prometheus_client import Counter, Histogram
-except Exception:  # pragma: no cover - optional dependency
+except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional dependency
     Counter = None
     Histogram = None
 
 try:
     import redis
-except Exception:  # pragma: no cover - optional dependency
+except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional dependency
     redis = None
 
 logger = logging.getLogger(__name__)
 
-import time
-
-from central.core.logging import configure_logging, log_error, log_info, set_trace_id
-
 configure_logging()
 
 
-def _noop_counter(*args: Any, **kwargs: Any):
+def _noop_counter(*args: Any, **kwargs: Any) -> Any:
     class _Counter:
-        def labels(self, **_kwargs: Any):
+        def labels(self, **_kwargs: Any) -> _Counter:
             return self
 
-        def inc(self, *_args: Any, **_kwargs: Any):
+        def inc(self, *_args: Any, **_kwargs: Any) -> None:
             return None
 
     return _Counter()
 
 
-def _noop_histogram(*args: Any, **kwargs: Any):
+def _noop_histogram(*args: Any, **kwargs: Any) -> Any:
     class _Histogram:
-        def labels(self, **_kwargs: Any):
+        def labels(self, **_kwargs: Any) -> _Histogram:
             return self
 
-        def time(self):
+        def time(self) -> Any:
             class _Timer:
-                def __enter__(self):
+                def __enter__(self) -> None:
                     return None
 
-                def __exit__(self, *_exc: Any):
+                def __exit__(self, *_exc: Any) -> bool:
                     return False
 
             return _Timer()
@@ -72,20 +76,23 @@ def _noop_histogram(*args: Any, **kwargs: Any):
 
 
 task_counter = (
-    Counter('worker_tasks_total', 'Total tasks processed', ['task_name', 'status'])
+    Counter("worker_tasks_total", "Total tasks processed", ["task_name", "status"])
     if Counter
     else _noop_counter()
 )
 task_duration = (
-    Histogram('worker_task_duration_seconds', 'Task duration', ['task_name'])
+    Histogram("worker_task_duration_seconds", "Task duration", ["task_name"])
     if Histogram
     else _noop_histogram()
 )
 
 _redis_client = None
+_REDIS_ERRORS = (ConnectionError, OSError, ValueError)
+if redis is not None and hasattr(redis, "RedisError"):
+    _REDIS_ERRORS = (redis.RedisError, ConnectionError, OSError, ValueError)
 
 
-def _get_redis_client():
+def _get_redis_client() -> Any:
     global _redis_client
     if _redis_client is not None:
         return _redis_client
@@ -99,14 +106,15 @@ def _get_redis_client():
     )
     try:
         _redis_client = redis.from_url(url)
-    except Exception:
+    except _REDIS_ERRORS as exc:
+        log_warning(logger, "redis.client_init_failed", error=str(exc))
         _redis_client = None
     return _redis_client
 
 
 class ResilientTask(Task):
     autoretry_for = (Exception,)
-    retry_kwargs = {'max_retries': 3}
+    retry_kwargs = {"max_retries": 3}
     retry_backoff = True
     retry_backoff_max = 600  # 10 minutes
     retry_jitter = True
@@ -115,7 +123,7 @@ class ResilientTask(Task):
     def logger(self) -> logging.Logger:
         return logging.getLogger(self.name)
 
-    def __call__(self, *args: Any, **kwargs: Any):
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
         set_trace_id(self.request.id if self.request else None)
         start = time.perf_counter()
         with task_duration.labels(task_name=self.name).time():
@@ -124,14 +132,16 @@ class ResilientTask(Task):
             self.request._duration_ms = int((time.perf_counter() - start) * 1000)
         return result
 
-    def apply_async(self, *args: Any, **kwargs: Any):
+    def apply_async(self, *args: Any, **kwargs: Any) -> Any:
         result = super().apply_async(*args, **kwargs)
-        task_counter.labels(task_name=self.name, status='queued').inc()
+        task_counter.labels(task_name=self.name, status="queued").inc()
         return result
 
-    def on_success(self, retval, task_id, args, kwargs):
-        task_counter.labels(task_name=self.name, status='success').inc()
-        duration_ms = getattr(self.request, "_duration_ms", None) if self.request else None
+    def on_success(self, retval, task_id, args, kwargs) -> None:
+        task_counter.labels(task_name=self.name, status="success").inc()
+        duration_ms = (
+            getattr(self.request, "_duration_ms", None) if self.request else None
+        )
         log_info(
             logger,
             "task.completed",
@@ -140,9 +150,9 @@ class ResilientTask(Task):
             duration_ms=duration_ms,
         )
 
-    def on_failure(self, exc, task_id, args, kwargs, einfo):
+    def on_failure(self, exc, task_id, args, kwargs, einfo) -> None:
         """Log failures to database and monitoring system"""
-        task_counter.labels(task_name=self.name, status='failure').inc()
+        task_counter.labels(task_name=self.name, status="failure").inc()
         log_error(
             logger,
             "task.failed",
@@ -151,7 +161,9 @@ class ResilientTask(Task):
             error=str(exc),
             retries=self.request.retries,
             max_retries=self.max_retries,
-            duration_ms=getattr(self.request, "_duration_ms", None) if self.request else None,
+            duration_ms=getattr(self.request, "_duration_ms", None)
+            if self.request
+            else None,
         )
         if TaskFailureLog is not None:
             with get_session() as session:
@@ -162,7 +174,7 @@ class ResilientTask(Task):
                     traceback=str(einfo),
                     args=json.dumps(args, default=str),
                     kwargs=json.dumps(kwargs, default=str),
-                    created_at=datetime.now(timezone.utc),
+                    created_at=datetime.now(UTC),
                 )
                 session.add(log)
                 session.commit()
@@ -183,7 +195,7 @@ class ResilientTask(Task):
 class DeduplicatedTask(ResilientTask):
     dedup_ttl_seconds = 300
 
-    def apply_async(self, args=None, kwargs=None, **options):
+    def apply_async(self, args=None, kwargs=None, **options) -> Any:
         client = _get_redis_client()
         if client is not None:
             task_hash = self._compute_task_hash(args, kwargs)
@@ -198,10 +210,14 @@ class DeduplicatedTask(ResilientTask):
                     )
                     return None
                 client.setex(cache_key, self.dedup_ttl_seconds, "1")
-            except Exception:
-                pass
+            except _REDIS_ERRORS as exc:
+                log_warning(
+                    logger, "task.dedup_failed", task_name=self.name, error=str(exc)
+                )
         return super().apply_async(args=args, kwargs=kwargs, **options)
 
-    def _compute_task_hash(self, args, kwargs):
-        data = json.dumps({"args": args or [], "kwargs": kwargs or {}}, sort_keys=True, default=str)
+    def _compute_task_hash(self, args, kwargs) -> str:
+        data = json.dumps(
+            {"args": args or [], "kwargs": kwargs or {}}, sort_keys=True, default=str
+        )
         return hashlib.md5(data.encode("utf-8")).hexdigest()

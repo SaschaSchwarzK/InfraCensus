@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from celery import Task
 import logging
 
 from central.core.celery_config import celery_app
@@ -11,17 +10,21 @@ from central.workers.base import ResilientTask
 
 
 class DetectChangesTask(ResilientTask):
-    name = 'workers.detect_changes'
-    
+    name = "workers.detect_changes"
+
     def run(self, device_id: int, current_scan_run_id: int) -> dict:
         """
         Compare current snapshot with previous to detect changes
         """
         with get_session() as session:
-            current = session.query(DeviceSnapshot).filter(
-                DeviceSnapshot.device_id == device_id,
-                DeviceSnapshot.scan_run_id == current_scan_run_id
-            ).first()
+            current = (
+                session.query(DeviceSnapshot)
+                .filter(
+                    DeviceSnapshot.device_id == device_id,
+                    DeviceSnapshot.scan_run_id == current_scan_run_id,
+                )
+                .first()
+            )
             if not current:
                 log_warning(
                     logging.getLogger(__name__),
@@ -29,11 +32,16 @@ class DetectChangesTask(ResilientTask):
                     device_id=device_id,
                     scan_run_id=current_scan_run_id,
                 )
-                return {'changes': None, 'reason': 'missing_snapshot'}
-            previous = session.query(DeviceSnapshot).filter(
-                DeviceSnapshot.device_id == device_id,
-                DeviceSnapshot.scan_run_id < current_scan_run_id
-            ).order_by(DeviceSnapshot.scan_run_id.desc()).first()
+                return {"changes": None, "reason": "missing_snapshot"}
+            previous = (
+                session.query(DeviceSnapshot)
+                .filter(
+                    DeviceSnapshot.device_id == device_id,
+                    DeviceSnapshot.scan_run_id < current_scan_run_id,
+                )
+                .order_by(DeviceSnapshot.scan_run_id.desc())
+                .first()
+            )
             if not previous:
                 log_info(
                     logging.getLogger(__name__),
@@ -41,14 +49,14 @@ class DetectChangesTask(ResilientTask):
                     device_id=device_id,
                     scan_run_id=current_scan_run_id,
                 )
-                return {'changes': None, 'reason': 'first_snapshot'}
+                return {"changes": None, "reason": "first_snapshot"}
 
             changes = {
-                'device': self._compare_device_snapshots(current, previous),
-                'interfaces': self._compare_interfaces(
+                "device": self._compare_device_snapshots(current, previous),
+                "interfaces": self._compare_interfaces(
                     device_id, current_scan_run_id, previous.scan_run_id, session
                 ),
-                'ips': self._compare_ips(
+                "ips": self._compare_ips(
                     device_id, current_scan_run_id, previous.scan_run_id, session
                 ),
             }
@@ -64,7 +72,9 @@ class DetectChangesTask(ResilientTask):
 
             return changes
 
-    def _compare_device_snapshots(self, current, previous):
+    def _compare_device_snapshots(
+        self, current: DeviceSnapshot, previous: DeviceSnapshot
+    ) -> dict:
         fields = [
             "vendor",
             "model",
@@ -83,40 +93,75 @@ class DetectChangesTask(ResilientTask):
         for field in fields:
             if getattr(current, field) != getattr(previous, field):
                 diffs.append(
-                    {"field": field, "before": getattr(previous, field), "after": getattr(current, field)}
+                    {
+                        "field": field,
+                        "before": getattr(previous, field),
+                        "after": getattr(current, field),
+                    }
                 )
         return {"changed": bool(diffs), "diffs": diffs}
 
-    def _compare_interfaces(self, device_id, current_scan_run_id, previous_scan_run_id, session):
-        current = session.query(InterfaceSnapshot).filter(
-            InterfaceSnapshot.device_id == device_id,
-            InterfaceSnapshot.scan_run_id == current_scan_run_id,
-        ).all()
-        previous = session.query(InterfaceSnapshot).filter(
-            InterfaceSnapshot.device_id == device_id,
-            InterfaceSnapshot.scan_run_id == previous_scan_run_id,
-        ).all()
+    def _compare_interfaces(
+        self,
+        device_id: int,
+        current_scan_run_id: int,
+        previous_scan_run_id: int,
+        session,
+    ) -> dict:
+        current = (
+            session.query(InterfaceSnapshot)
+            .filter(
+                InterfaceSnapshot.device_id == device_id,
+                InterfaceSnapshot.scan_run_id == current_scan_run_id,
+            )
+            .all()
+        )
+        previous = (
+            session.query(InterfaceSnapshot)
+            .filter(
+                InterfaceSnapshot.device_id == device_id,
+                InterfaceSnapshot.scan_run_id == previous_scan_run_id,
+            )
+            .all()
+        )
         current_map = {row.name: row.snapshot_hash for row in current}
         previous_map = {row.name: row.snapshot_hash for row in previous}
         added = [name for name in current_map.keys() if name not in previous_map]
         removed = [name for name in previous_map.keys() if name not in current_map]
         changed = [
-            name for name in current_map.keys()
+            name
+            for name in current_map.keys()
             if name in previous_map and current_map[name] != previous_map[name]
         ]
         return {"added": added, "removed": removed, "changed": changed}
 
-    def _compare_ips(self, device_id, current_scan_run_id, previous_scan_run_id, session):
-        current = session.query(IpSnapshot).filter(
-            IpSnapshot.device_id == device_id,
-            IpSnapshot.scan_run_id == current_scan_run_id,
-        ).all()
-        previous = session.query(IpSnapshot).filter(
-            IpSnapshot.device_id == device_id,
-            IpSnapshot.scan_run_id == previous_scan_run_id,
-        ).all()
-        def key(row):
+    def _compare_ips(
+        self,
+        device_id: int,
+        current_scan_run_id: int,
+        previous_scan_run_id: int,
+        session,
+    ) -> dict:
+        current = (
+            session.query(IpSnapshot)
+            .filter(
+                IpSnapshot.device_id == device_id,
+                IpSnapshot.scan_run_id == current_scan_run_id,
+            )
+            .all()
+        )
+        previous = (
+            session.query(IpSnapshot)
+            .filter(
+                IpSnapshot.device_id == device_id,
+                IpSnapshot.scan_run_id == previous_scan_run_id,
+            )
+            .all()
+        )
+
+        def key(row: IpSnapshot) -> tuple[str, str, int]:
             return (row.interface_name, row.ip_address, row.prefix_length)
+
         current_set = {key(row) for row in current}
         previous_set = {key(row) for row in previous}
         return {
@@ -127,7 +172,11 @@ class DetectChangesTask(ResilientTask):
     def _has_significant_changes(self, changes: dict) -> bool:
         if changes.get("device", {}).get("changed"):
             return True
-        if changes.get("interfaces", {}).get("added") or changes.get("interfaces", {}).get("removed") or changes.get("interfaces", {}).get("changed"):
+        if (
+            changes.get("interfaces", {}).get("added")
+            or changes.get("interfaces", {}).get("removed")
+            or changes.get("interfaces", {}).get("changed")
+        ):
             return True
         if changes.get("ips", {}).get("added") or changes.get("ips", {}).get("removed"):
             return True

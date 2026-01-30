@@ -1,5 +1,7 @@
 # API Notes
 
+See `docs/api/openapi.md` for OpenAPI access details for central and collector.
+
 ## JSON Responses
 
 All GUI GET routes return JSON when `Accept: application/json` is set.

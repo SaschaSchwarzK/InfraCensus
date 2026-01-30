@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import secrets
 import string
 from typing import Any
-import logging
 
 from central.core.celery_config import celery_app
 from central.core.logging import log_info, log_warning
@@ -30,11 +31,28 @@ def rotate_credentials_task() -> dict[str, Any]:
             reason="missing_vault_or_targets",
         )
         return {"status": "skipped"}
-    client = VaultClient(VaultSettings(addr=addr, token=token, kv_mount=mount, namespace=namespace))
-    rotated = 0
-    for path in [item.strip() for item in targets.split(",") if item.strip()]:
-        payload = {"secret": _generate_secret()}
-        if client.write_secret(path, payload):
-            rotated += 1
+    rotated = asyncio.run(
+        _rotate_credentials(
+            addr=addr,
+            token=token,
+            mount=mount,
+            namespace=namespace,
+            targets=[item.strip() for item in targets.split(",") if item.strip()],
+        )
+    )
     log_info(logging.getLogger(__name__), "rotation.completed", rotated=rotated)
     return {"status": "ok", "rotated": rotated}
+
+
+async def _rotate_credentials(
+    *, addr: str, token: str, mount: str, namespace: str | None, targets: list[str]
+) -> int:
+    rotated = 0
+    async with VaultClient(
+        VaultSettings(addr=addr, token=token, kv_mount=mount, namespace=namespace)
+    ) as client:
+        for path in targets:
+            payload = {"secret": _generate_secret()}
+            if await client.write_secret(path, payload):
+                rotated += 1
+    return rotated

@@ -1,0 +1,11 @@
+tenants:
+  - name: corp
+    sites:
+      - name: hq
+        networks:
+          - name: hq-corp
+            cidr: 10.0.0.0/24
+      - name: branch
+        networks:
+          - name: branch-corp
+            cidr: 10.1.0.0/24

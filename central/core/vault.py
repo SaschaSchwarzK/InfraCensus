@@ -17,27 +17,36 @@ class VaultSettings:
 class VaultClient:
     def __init__(self, settings: VaultSettings) -> None:
         self._settings = settings
-        self._client = httpx.Client(timeout=10)
+        self._client = httpx.AsyncClient(timeout=10)
 
-    def read_secret(self, path: str) -> dict[str, Any] | None:
+    async def __aenter__(self) -> VaultClient:
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.close()
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+    async def read_secret(self, path: str) -> dict[str, Any] | None:
         if not self._settings.addr or not self._settings.token:
             return None
         url = f"{self._settings.addr.rstrip('/')}/v1/{self._settings.kv_mount}/data/{path.lstrip('/')}"
         headers = {"X-Vault-Token": self._settings.token}
         if self._settings.namespace:
             headers["X-Vault-Namespace"] = self._settings.namespace
-        response = self._client.get(url, headers=headers)
+        response = await self._client.get(url, headers=headers)
         if response.status_code != 200:
             return None
         payload = response.json()
         return payload.get("data", {}).get("data", {})
 
-    def write_secret(self, path: str, payload: dict[str, Any]) -> bool:
+    async def write_secret(self, path: str, payload: dict[str, Any]) -> bool:
         if not self._settings.addr or not self._settings.token:
             return False
         url = f"{self._settings.addr.rstrip('/')}/v1/{self._settings.kv_mount}/data/{path.lstrip('/')}"
         headers = {"X-Vault-Token": self._settings.token}
         if self._settings.namespace:
             headers["X-Vault-Namespace"] = self._settings.namespace
-        response = self._client.post(url, headers=headers, json={"data": payload})
+        response = await self._client.post(url, headers=headers, json={"data": payload})
         return response.status_code in {200, 204}

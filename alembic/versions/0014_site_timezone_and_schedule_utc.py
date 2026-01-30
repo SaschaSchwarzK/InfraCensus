@@ -6,9 +6,9 @@ Create Date: 2024-01-14 00:00:00.000000
 
 """
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision = "0014_site_timezone_and_schedule_utc"
 down_revision = "0013_collectors_enrollment_certs"
@@ -24,16 +24,30 @@ def upgrade() -> None:
         batch.alter_column("timezone", nullable=False)
 
     with op.batch_alter_table("collectors") as batch:
-        batch.add_column(sa.Column("last_seen_utc", sa.DateTime(timezone=True), nullable=True))
+        batch.add_column(
+            sa.Column("last_seen_utc", sa.DateTime(timezone=True), nullable=True)
+        )
         batch.add_column(sa.Column("clock_skew_seconds", sa.Integer(), nullable=True))
 
     with op.batch_alter_table("scan_schedules") as batch:
-        batch.add_column(sa.Column("scheduled_at_utc", sa.DateTime(timezone=True), nullable=True))
-        batch.add_column(sa.Column("not_before_utc", sa.DateTime(timezone=True), nullable=True))
-        batch.add_column(sa.Column("not_after_utc", sa.DateTime(timezone=True), nullable=True))
-        batch.add_column(sa.Column("actual_start_at_utc", sa.DateTime(timezone=True), nullable=True))
-        batch.add_column(sa.Column("finished_at_utc", sa.DateTime(timezone=True), nullable=True))
-    op.execute("UPDATE scan_schedules SET scheduled_at_utc = planned_start_at WHERE scheduled_at_utc IS NULL")
+        batch.add_column(
+            sa.Column("scheduled_at_utc", sa.DateTime(timezone=True), nullable=True)
+        )
+        batch.add_column(
+            sa.Column("not_before_utc", sa.DateTime(timezone=True), nullable=True)
+        )
+        batch.add_column(
+            sa.Column("not_after_utc", sa.DateTime(timezone=True), nullable=True)
+        )
+        batch.add_column(
+            sa.Column("actual_start_at_utc", sa.DateTime(timezone=True), nullable=True)
+        )
+        batch.add_column(
+            sa.Column("finished_at_utc", sa.DateTime(timezone=True), nullable=True)
+        )
+    op.execute(
+        "UPDATE scan_schedules SET scheduled_at_utc = planned_start_at WHERE scheduled_at_utc IS NULL"
+    )
     with op.batch_alter_table("scan_schedules") as batch:
         batch.alter_column("scheduled_at_utc", nullable=False)
         batch.drop_column("planned_start_at")
@@ -41,12 +55,24 @@ def upgrade() -> None:
         batch.drop_column("finished_at")
 
     with op.batch_alter_table("scan_schedule_types") as batch:
-        batch.add_column(sa.Column("scheduled_at_utc", sa.DateTime(timezone=True), nullable=True))
-        batch.add_column(sa.Column("not_before_utc", sa.DateTime(timezone=True), nullable=True))
-        batch.add_column(sa.Column("not_after_utc", sa.DateTime(timezone=True), nullable=True))
-        batch.add_column(sa.Column("actual_start_at_utc", sa.DateTime(timezone=True), nullable=True))
-        batch.add_column(sa.Column("finished_at_utc", sa.DateTime(timezone=True), nullable=True))
-    op.execute("UPDATE scan_schedule_types SET scheduled_at_utc = planned_start_at WHERE scheduled_at_utc IS NULL")
+        batch.add_column(
+            sa.Column("scheduled_at_utc", sa.DateTime(timezone=True), nullable=True)
+        )
+        batch.add_column(
+            sa.Column("not_before_utc", sa.DateTime(timezone=True), nullable=True)
+        )
+        batch.add_column(
+            sa.Column("not_after_utc", sa.DateTime(timezone=True), nullable=True)
+        )
+        batch.add_column(
+            sa.Column("actual_start_at_utc", sa.DateTime(timezone=True), nullable=True)
+        )
+        batch.add_column(
+            sa.Column("finished_at_utc", sa.DateTime(timezone=True), nullable=True)
+        )
+    op.execute(
+        "UPDATE scan_schedule_types SET scheduled_at_utc = planned_start_at WHERE scheduled_at_utc IS NULL"
+    )
     with op.batch_alter_table("scan_schedule_types") as batch:
         batch.alter_column("scheduled_at_utc", nullable=False)
         batch.drop_column("planned_start_at")
@@ -56,10 +82,18 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     with op.batch_alter_table("scan_schedule_types") as batch:
-        batch.add_column(sa.Column("planned_start_at", sa.DateTime(timezone=True), nullable=True))
-        batch.add_column(sa.Column("actual_start_at", sa.DateTime(timezone=True), nullable=True))
-        batch.add_column(sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True))
-    op.execute("UPDATE scan_schedule_types SET planned_start_at = scheduled_at_utc WHERE planned_start_at IS NULL")
+        batch.add_column(
+            sa.Column("planned_start_at", sa.DateTime(timezone=True), nullable=True)
+        )
+        batch.add_column(
+            sa.Column("actual_start_at", sa.DateTime(timezone=True), nullable=True)
+        )
+        batch.add_column(
+            sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True)
+        )
+    op.execute(
+        "UPDATE scan_schedule_types SET planned_start_at = scheduled_at_utc WHERE planned_start_at IS NULL"
+    )
     with op.batch_alter_table("scan_schedule_types") as batch:
         batch.drop_column("scheduled_at_utc")
         batch.drop_column("not_before_utc")
@@ -69,10 +103,18 @@ def downgrade() -> None:
         batch.alter_column("planned_start_at", nullable=False)
 
     with op.batch_alter_table("scan_schedules") as batch:
-        batch.add_column(sa.Column("planned_start_at", sa.DateTime(timezone=True), nullable=True))
-        batch.add_column(sa.Column("actual_start_at", sa.DateTime(timezone=True), nullable=True))
-        batch.add_column(sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True))
-    op.execute("UPDATE scan_schedules SET planned_start_at = scheduled_at_utc WHERE planned_start_at IS NULL")
+        batch.add_column(
+            sa.Column("planned_start_at", sa.DateTime(timezone=True), nullable=True)
+        )
+        batch.add_column(
+            sa.Column("actual_start_at", sa.DateTime(timezone=True), nullable=True)
+        )
+        batch.add_column(
+            sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True)
+        )
+    op.execute(
+        "UPDATE scan_schedules SET planned_start_at = scheduled_at_utc WHERE planned_start_at IS NULL"
+    )
     with op.batch_alter_table("scan_schedules") as batch:
         batch.drop_column("scheduled_at_utc")
         batch.drop_column("not_before_utc")

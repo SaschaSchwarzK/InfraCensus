@@ -1,0 +1,7 @@
+scan:
+  type: snmp
+  targets:
+    - 10.0.0.10
+    - 10.0.0.20
+  credentials:
+    community: public

@@ -20,7 +20,7 @@
           <tr><th>Site</th><td>{{ site_map.get(collector.site_id, "") }}</td></tr>
           <tr><th>Capabilities</th><td class="meta">{{ collector.capabilities or "" }}</td></tr>
           <tr><th>Labels</th><td class="meta">{{ collector.labels or "" }}</td></tr>
-          <tr><th>Allowed Scopes</th><td class="meta">{{ collector.allowed_scopes or "" }}</td></tr>
+          <tr><th>Allowed Scopes</th><td class="meta">{{ collector.allowed_scopes | join(", ") if collector.allowed_scopes else "" }}</td></tr>
           <tr>
             <th>Last Seen</th>
             <td class="meta">
@@ -74,7 +74,7 @@
         </div>
         <div style="margin-bottom: 0.5rem;">
           <label for="collector-scopes">Allowed Scopes</label><br />
-          <input id="collector-scopes" name="allowed_scopes" type="text" value="{{ collector.allowed_scopes or '' }}" style="width: 80%; padding: 0.4rem;" />
+          <input id="collector-scopes" name="allowed_scopes" type="text" value="{{ collector.allowed_scopes | join(', ') if collector.allowed_scopes else '' }}" style="width: 80%; padding: 0.4rem;" />
         </div>
         <button type="submit">Save</button>
       </form>

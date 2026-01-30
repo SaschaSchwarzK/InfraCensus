@@ -12,7 +12,9 @@ class SnmpScanner(BaseScanner):
     name = "snmp"
     required_tools = []
 
-    async def scan(self, targets: list[str], params: dict[str, Any]) -> list[ScanResult]:
+    async def scan(
+        self, targets: list[str], params: dict[str, Any]
+    ) -> list[ScanResult]:
         results = []
         timeout = int(params.get("timeout", 5))
         credentials = params.get("credentials_by_target") or {}
@@ -49,7 +51,7 @@ async def _udp_probe(target: str, port: int, timeout: int) -> bool:
         finally:
             try:
                 sock.close()
-            except Exception:
+            except OSError:
                 pass
 
     return await asyncio.to_thread(_run)

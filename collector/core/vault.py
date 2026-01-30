@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
-import time
 
 import httpx
 
@@ -21,6 +21,12 @@ class VaultClient:
         self._settings = settings
         self._client = httpx.AsyncClient(timeout=10)
         self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+    async def __aenter__(self) -> VaultClient:
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.close()
 
     async def close(self) -> None:
         await self._client.aclose()

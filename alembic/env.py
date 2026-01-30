@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from logging.config import fileConfig
 import sys
+from logging.config import fileConfig
 from pathlib import Path
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
+
+from alembic import context
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(REPO_ROOT))
 
 from central.core.config import settings  # noqa: E402
-from central.db.base import Base  # noqa: E402
 from central.db import models  # noqa: F401,E402
+from central.db.base import Base  # noqa: E402
 
 config = context.config
 fileConfig(config.config_file_name)

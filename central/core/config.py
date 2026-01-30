@@ -1,9 +1,19 @@
-from dataclasses import dataclass
+import asyncio
+import logging
 import os
+import threading
+from dataclasses import dataclass
+from typing import Any
+
+from central.core.config_schema import CentralConfigSchema
+from central.core.config_source import ConfigSource
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class Settings:
+    environment: str
     api_host: str
     api_port: int
     database_url: str
@@ -22,10 +32,12 @@ class Settings:
     oidc_logout_url: str | None
     collector_tokens: str
     api_keys: str
+    api_key_pepper: str
     vault_addr: str | None
     vault_token: str | None
     vault_kv_mount: str
     vault_namespace: str | None
+    require_vault: bool
     collector_rate_limit_per_hour: int
     collector_quarantine_seconds: int
     scheduler_max_jobs_per_poll: int
@@ -34,58 +46,198 @@ class Settings:
     scheduler_network_rate_limit_per_minute: int
     scheduler_network_rate_limit_window_seconds: int
     vault_rotation_targets: str
+    collector_clock_skew_max_seconds: int
+    security_headers_enabled: bool
+    security_csp: str
+    security_frame_options: str
+    security_referrer_policy: str
+    security_hsts_seconds: int
+    security_hsts_include_subdomains: bool
+    security_hsts_preload: bool
+    security_audit_sample_rate: float
     ca_key_path: str
     ca_cert_path: str
     ca_cert_valid_days: int
     collector_cert_valid_days: int
 
     @classmethod
-    def from_env(cls) -> "Settings":
-        return cls(
-            api_host=os.getenv("API_HOST", "0.0.0.0"),
-            api_port=int(os.getenv("API_PORT", "8000")),
-            database_url=os.getenv(
-                "DATABASE_URL",
-                "postgresql+psycopg://infracensus:infracensus@localhost:5432/infracensus",
-            ),
-            db_pool_size=int(os.getenv("DB_POOL_SIZE", "5")),
-            db_max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "10")),
-            db_pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "30")),
-            db_pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "1800")),
-            db_pool_pre_ping=os.getenv("DB_POOL_PRE_PING", "true").lower() in {"1", "true", "yes", "on"},
-            session_secret=os.getenv("SESSION_SECRET", "dev-session-secret"),
-            auth_mode=os.getenv("AUTH_MODE", "local"),
-            oidc_issuer_url=os.getenv("OIDC_ISSUER_URL"),
-            oidc_client_id=os.getenv("OIDC_CLIENT_ID"),
-            oidc_client_secret=os.getenv("OIDC_CLIENT_SECRET"),
-            oidc_scopes=os.getenv("OIDC_SCOPES", "openid email profile"),
-            oidc_redirect_uri=os.getenv("OIDC_REDIRECT_URI", "http://localhost:8000/oidc/callback"),
-            oidc_logout_url=os.getenv("OIDC_LOGOUT_URL"),
-            collector_tokens=os.getenv("COLLECTOR_TOKENS", ""),
-            api_keys=os.getenv("API_KEYS", ""),
-            vault_addr=os.getenv("VAULT_ADDR"),
-            vault_token=os.getenv("VAULT_TOKEN"),
-            vault_kv_mount=os.getenv("VAULT_KV_MOUNT", "secret"),
-            vault_namespace=os.getenv("VAULT_NAMESPACE"),
-            collector_rate_limit_per_hour=int(os.getenv("COLLECTOR_RATE_LIMIT_PER_HOUR", "1000")),
-            collector_quarantine_seconds=int(os.getenv("COLLECTOR_QUARANTINE_SECONDS", "3600")),
-            scheduler_max_jobs_per_poll=int(os.getenv("SCHEDULER_MAX_JOBS_PER_POLL", "5")),
-            scheduler_default_capacity=int(os.getenv("SCHEDULER_DEFAULT_CAPACITY", "2")),
-            scheduler_job_assignment_ttl_seconds=int(
-                os.getenv("SCHEDULER_JOB_ASSIGNMENT_TTL_SECONDS", "1800")
-            ),
-            scheduler_network_rate_limit_per_minute=int(
-                os.getenv("SCHEDULER_NETWORK_RATE_LIMIT_PER_MINUTE", "6")
-            ),
-            scheduler_network_rate_limit_window_seconds=int(
-                os.getenv("SCHEDULER_NETWORK_RATE_LIMIT_WINDOW_SECONDS", "60")
-            ),
-            vault_rotation_targets=os.getenv("VAULT_ROTATION_TARGETS", ""),
-            ca_key_path=os.getenv("CA_KEY_PATH", "./ca/ca.key"),
-            ca_cert_path=os.getenv("CA_CERT_PATH", "./ca/ca.crt"),
-            ca_cert_valid_days=int(os.getenv("CA_CERT_VALID_DAYS", "3650")),
-            collector_cert_valid_days=int(os.getenv("COLLECTOR_CERT_VALID_DAYS", "365")),
+    def from_sources(cls, config: dict[str, Any]) -> Settings:
+        validated = CentralConfigSchema.model_validate(config)
+        environment = validated.environment.lower()
+        session_secret = validated.session_secret
+        if environment != "dev":
+            if session_secret == "dev-session-secret":
+                raise ValueError(
+                    "SESSION_SECRET must be set to a non-default value in non-dev environments."
+                )
+            if len(session_secret) < 32:
+                raise ValueError(
+                    "SESSION_SECRET must be at least 32 characters in non-dev environments."
+                )
+        settings = cls(
+            environment=environment,
+            api_host=validated.api_host,
+            api_port=validated.api_port,
+            database_url=validated.database_url,
+            db_pool_size=validated.db_pool_size,
+            db_max_overflow=validated.db_max_overflow,
+            db_pool_timeout=validated.db_pool_timeout,
+            db_pool_recycle=validated.db_pool_recycle,
+            db_pool_pre_ping=validated.db_pool_pre_ping,
+            session_secret=session_secret,
+            auth_mode=validated.auth_mode,
+            oidc_issuer_url=validated.oidc_issuer_url,
+            oidc_client_id=validated.oidc_client_id,
+            oidc_client_secret=validated.oidc_client_secret,
+            oidc_scopes=validated.oidc_scopes,
+            oidc_redirect_uri=validated.oidc_redirect_uri,
+            oidc_logout_url=validated.oidc_logout_url,
+            collector_tokens=validated.collector_tokens,
+            api_keys=validated.api_keys,
+            api_key_pepper=validated.api_key_pepper,
+            vault_addr=validated.vault_addr,
+            vault_token=validated.vault_token,
+            vault_kv_mount=validated.vault_kv_mount,
+            vault_namespace=validated.vault_namespace,
+            require_vault=validated.require_vault,
+            collector_rate_limit_per_hour=validated.collector_rate_limit_per_hour,
+            collector_quarantine_seconds=validated.collector_quarantine_seconds,
+            scheduler_max_jobs_per_poll=validated.scheduler_max_jobs_per_poll,
+            scheduler_default_capacity=validated.scheduler_default_capacity,
+            scheduler_job_assignment_ttl_seconds=validated.scheduler_job_assignment_ttl_seconds,
+            scheduler_network_rate_limit_per_minute=validated.scheduler_network_rate_limit_per_minute,
+            scheduler_network_rate_limit_window_seconds=validated.scheduler_network_rate_limit_window_seconds,
+            vault_rotation_targets=validated.vault_rotation_targets,
+            collector_clock_skew_max_seconds=validated.collector_clock_skew_max_seconds,
+            security_headers_enabled=validated.security_headers_enabled,
+            security_csp=validated.security_csp,
+            security_frame_options=validated.security_frame_options,
+            security_referrer_policy=validated.security_referrer_policy,
+            security_hsts_seconds=validated.security_hsts_seconds,
+            security_hsts_include_subdomains=validated.security_hsts_include_subdomains,
+            security_hsts_preload=validated.security_hsts_preload,
+            security_audit_sample_rate=validated.security_audit_sample_rate,
+            ca_key_path=validated.ca_key_path,
+            ca_cert_path=validated.ca_cert_path,
+            ca_cert_valid_days=validated.ca_cert_valid_days,
+            collector_cert_valid_days=validated.collector_cert_valid_days,
         )
+        settings.validate()
+        return settings
+
+    def validate(self) -> None:
+        if not (0 < self.api_port < 65536):
+            raise ValueError("API_PORT must be between 1 and 65535")
+        if self.db_pool_size < 1:
+            raise ValueError("DB_POOL_SIZE must be >= 1")
+        if self.db_pool_timeout < 1:
+            raise ValueError("DB_POOL_TIMEOUT must be >= 1")
+        if self.collector_clock_skew_max_seconds < 0:
+            raise ValueError("COLLECTOR_CLOCK_SKEW_MAX_SECONDS must be >= 0")
+        if self.require_vault and (not self.vault_addr or not self.vault_token):
+            raise ValueError(
+                "Vault configuration is required when REQUIRE_VAULT is true."
+            )
+        if self.security_hsts_seconds < 0:
+            raise ValueError("SECURITY_HSTS_SECONDS must be >= 0")
+        if not 0 <= self.security_audit_sample_rate <= 1:
+            raise ValueError("SECURITY_AUDIT_SAMPLE_RATE must be between 0 and 1")
 
 
-settings = Settings.from_env()
+class SettingsProxy:
+    def __init__(self, state: SettingsState) -> None:
+        self._state = state
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._state.settings, name)
+
+
+class SettingsState:
+    def __init__(self, source: ConfigSource) -> None:
+        self._source = source
+        self._lock = threading.Lock()
+        self._settings: Settings | None = None
+        self._config_hash: str | None = None
+        self._listeners: list[callable[[Settings], None]] = []
+
+    @property
+    def settings(self) -> Settings:
+        if self._settings is None:
+            self.reload_sync(force=True)
+        return self._settings  # type: ignore[return-value]
+
+    async def reload(self, force: bool = False) -> None:
+        config, digest = await self._source.load()
+        if not force and digest and digest == self._config_hash:
+            return
+        new_settings = Settings.from_sources(config)
+        with self._lock:
+            self._settings = new_settings
+            self._config_hash = digest
+            listeners = list(self._listeners)
+        for listener in listeners:
+            try:
+                listener(new_settings)
+            except (RuntimeError, ValueError, TypeError) as exc:
+                logger.warning("config.reload_listener_failed", error=str(exc))
+
+    def reload_sync(self, force: bool = False) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.reload(force=force))
+            return
+        loop.create_task(self.reload(force=force))
+
+    def add_listener(self, listener: callable[[Settings], None]) -> None:
+        self._listeners.append(listener)
+
+
+_config_source = ConfigSource.from_env()
+_settings_state = SettingsState(_config_source)
+settings = SettingsProxy(_settings_state)
+
+
+def register_settings_listener(listener: callable[[Settings], None]) -> None:
+    _settings_state.add_listener(listener)
+
+
+def get_config_poll_seconds() -> int:
+    if os.getenv("CONFIG_POLL_SECONDS"):
+        return int(os.getenv("CONFIG_POLL_SECONDS", "0"))
+    return 60 if _config_source.git_url else 0
+
+
+async def start_config_polling() -> None:
+    interval = get_config_poll_seconds()
+    if interval <= 0:
+        return
+
+    async def _poll() -> None:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await _settings_state.reload()
+            except (RuntimeError, ValueError, TypeError) as exc:
+                logger.warning("config.reload_failed", error=str(exc))
+
+    asyncio.create_task(_poll())
+
+
+def _value(env_key: str, config: dict[str, Any], key: str, default: Any) -> Any:
+    if env_key in os.environ:
+        return os.environ[env_key]
+    if key in config:
+        return config[key]
+    return default
+
+
+def _int_value(env_key: str, config: dict[str, Any], key: str, default: int) -> int:
+    return int(_value(env_key, config, key, default))
+
+
+def _bool_value(env_key: str, config: dict[str, Any], key: str, default: bool) -> bool:
+    value = _value(env_key, config, key, default)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}

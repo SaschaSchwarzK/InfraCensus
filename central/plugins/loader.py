@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import importlib
-from typing import Iterable
+from collections.abc import Iterable
 
 
 def load_plugins(module_paths: Iterable[str]) -> None:

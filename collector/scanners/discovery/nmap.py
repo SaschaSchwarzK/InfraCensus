@@ -12,7 +12,9 @@ class NmapScanner(BaseScanner):
     name = "nmap"
     required_tools = ["nmap"]
 
-    async def scan(self, targets: list[str], params: dict[str, Any]) -> list[ScanResult]:
+    async def scan(
+        self, targets: list[str], params: dict[str, Any]
+    ) -> list[ScanResult]:
         results = []
         timeout = int(params.get("timeout", 30))
         for target in targets:

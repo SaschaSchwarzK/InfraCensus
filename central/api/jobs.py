@@ -3,14 +3,15 @@ from __future__ import annotations
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from central.api.job_status import job_status_hub
-from central.core.auth import parse_api_keys
+from central.core.audit import log_security_event
+from central.core.auth import get_api_key_scopes
 from central.core.config import settings
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
 @router.websocket("/{job_id}/status")
-async def job_status_stream(websocket: WebSocket, job_id: str):
+async def job_status_stream(websocket: WebSocket, job_id: str) -> None:
     if not _is_authorized(websocket):
         await websocket.close(code=1008)
         return
@@ -30,9 +31,21 @@ def _is_authorized(websocket: WebSocket) -> bool:
         or _bearer_token(websocket)
     )
     if not key:
+        log_security_event(
+            action="jobs.websocket.denied",
+            outcome="denied",
+            details={"reason": "missing_api_key"},
+        )
         return False
-    scopes = parse_api_keys(settings.api_keys).get(key, set())
-    return "jobs:read" in scopes or "*" in scopes
+    scopes = get_api_key_scopes(settings.api_keys, key, settings.api_key_pepper)
+    allowed = "jobs:read" in scopes or "*" in scopes
+    if not allowed:
+        log_security_event(
+            action="jobs.websocket.denied",
+            outcome="denied",
+            details={"reason": "insufficient_scope"},
+        )
+    return allowed
 
 
 def _bearer_token(websocket: WebSocket) -> str | None:

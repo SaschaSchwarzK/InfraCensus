@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from celery import Task
-from uuid import uuid4
 import logging
+from uuid import uuid4
 
 from central.core.celery_config import celery_app
 from central.core.logging import log_info, log_warning
@@ -17,12 +16,12 @@ from central.workers.base import ResilientTask
 
 
 class ReconcileDeviceTask(ResilientTask):
-    name = 'workers.reconcile_device'
-    
+    name = "workers.reconcile_device"
+
     def run(self, observation_id: int, parsed_data: dict) -> dict:
         """
         Match observation to existing device or create new one
-        
+
         Strategy:
         1. Try matching by serial number (highest confidence)
         2. Try matching by MAC address
@@ -37,9 +36,9 @@ class ReconcileDeviceTask(ResilientTask):
                     "reconcile.missing_observation",
                     observation_id=observation_id,
                 )
-                return {'observation_id': observation_id, 'status': 'missing'}
-            identities = parsed_data.get('identities', {})
-            
+                return {"observation_id": observation_id, "status": "missing"}
+            identities = parsed_data.get("identities", {})
+
             # Device matching logic
             device = self._find_or_create_device(
                 session=session,
@@ -47,24 +46,23 @@ class ReconcileDeviceTask(ResilientTask):
                 site_id=obs.scan_run.site_id,
                 scan_run_id=obs.scan_run_id,
                 identities=identities,
-                device_info=parsed_data.get('device_info', {})
+                device_info=parsed_data.get("device_info", {}),
             )
 
             self._ensure_identities(session, device, identities, obs.scan_run_id)
-            
+
             # Link observation to device
             obs.device_id = device.id
             session.commit()
-            
+
             # Chain to snapshot creation
             from central.workers.snapshots import create_snapshot_task
 
             create_snapshot_task.delay(
-                observation_id=observation_id,
-                device_id=device.id
+                observation_id=observation_id, device_id=device.id
             )
-            
-            action = 'matched' if device.created_at < obs.created_at else 'created'
+
+            action = "matched" if device.created_at < obs.created_at else "created"
             log_info(
                 logging.getLogger(__name__),
                 "reconcile.complete",
@@ -73,42 +71,55 @@ class ReconcileDeviceTask(ResilientTask):
                 action=action,
             )
             return {
-                'observation_id': observation_id,
-                'device_id': device.id,
-                'action': action,
+                "observation_id": observation_id,
+                "device_id": device.id,
+                "action": action,
             }
-    
-    def _find_or_create_device(self, session, tenant_id, site_id, scan_run_id,
-                                identities, device_info):
+
+    def _find_or_create_device(
+        self,
+        session,
+        tenant_id: int,
+        site_id: int | None,
+        scan_run_id: int,
+        identities: dict,
+        device_info: dict,
+    ) -> InventoryDevice:
         """Multi-stage device matching"""
         # Try serial number
-        if serial := identities.get('serial'):
+        if serial := identities.get("serial"):
             if device := self._find_by_identity(
                 session, tenant_id, IdentityType.serial, serial
             ):
                 return device
-        
+
         # Try MAC address
-        if mac := identities.get('mac'):
+        if mac := identities.get("mac"):
             if device := self._find_by_identity(
                 session, tenant_id, IdentityType.mac, mac
             ):
                 return device
-        
+
         # Try hostname + mgmt_ip combo
-        if hostname := identities.get('hostname'):
-            if mgmt_ip := identities.get('mgmt_ip'):
+        if hostname := identities.get("hostname"):
+            if mgmt_ip := identities.get("mgmt_ip"):
                 if device := self._find_by_hostname_ip(
                     session, tenant_id, hostname, mgmt_ip
                 ):
                     return device
-        
+
         # Create new device
         return self._create_device(
             session, tenant_id, site_id, scan_run_id, identities, device_info
         )
 
-    def _find_by_identity(self, session, tenant_id, identity_type, value):
+    def _find_by_identity(
+        self,
+        session,
+        tenant_id: int,
+        identity_type: IdentityType,
+        value: str,
+    ) -> InventoryDevice | None:
         return (
             session.query(InventoryDevice)
             .join(DeviceIdentity, DeviceIdentity.device_id == InventoryDevice.id)
@@ -120,7 +131,13 @@ class ReconcileDeviceTask(ResilientTask):
             .first()
         )
 
-    def _find_by_hostname_ip(self, session, tenant_id, hostname, mgmt_ip):
+    def _find_by_hostname_ip(
+        self,
+        session,
+        tenant_id: int,
+        hostname: str,
+        mgmt_ip: str,
+    ) -> InventoryDevice | None:
         hostname_ids = (
             session.query(DeviceIdentity.device_id)
             .join(InventoryDevice, InventoryDevice.id == DeviceIdentity.device_id)
@@ -148,9 +165,21 @@ class ReconcileDeviceTask(ResilientTask):
         match_ids = hostname_set & ip_set
         if not match_ids:
             return None
-        return session.query(InventoryDevice).filter(InventoryDevice.id.in_(match_ids)).first()
+        return (
+            session.query(InventoryDevice)
+            .filter(InventoryDevice.id.in_(match_ids))
+            .first()
+        )
 
-    def _create_device(self, session, tenant_id, site_id, scan_run_id, identities, device_info):
+    def _create_device(
+        self,
+        session,
+        tenant_id: int,
+        site_id: int | None,
+        scan_run_id: int,
+        identities: dict,
+        device_info: dict,
+    ) -> InventoryDevice:
         device = InventoryDevice(
             tenant_id=tenant_id,
             site_id=site_id,
@@ -177,7 +206,13 @@ class ReconcileDeviceTask(ResilientTask):
         )
         return device
 
-    def _ensure_identities(self, session, device, identities, scan_run_id):
+    def _ensure_identities(
+        self,
+        session,
+        device: InventoryDevice,
+        identities: dict,
+        scan_run_id: int,
+    ) -> None:
         mapping = {
             "serial": (IdentityType.serial, 100),
             "mac": (IdentityType.mac, 80),

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any
 from urllib.parse import urljoin
 
 import httpx
-import asyncio
-import time
+from opentelemetry import propagate
+
+from collector.core.tracing import get_tracer
 
 
 @dataclass(frozen=True)
@@ -40,6 +44,13 @@ class ApiClient:
         self._cb_threshold = circuit_breaker_threshold
         self._cb_cooldown = circuit_breaker_cooldown
         self._request_metrics: dict[tuple[str, int], dict[str, float]] = {}
+        self._metrics_lock = Lock()
+
+    async def __aenter__(self) -> ApiClient:
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.close()
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -81,13 +92,21 @@ class ApiClient:
                 status_code=0,
                 payload={"error": "circuit_open"},
             )
+        tracer = get_tracer(__name__)
         for attempt in range(self._max_retries + 1):
             try:
                 start = time.perf_counter()
-                if method == "GET":
-                    response = await self._client.get(url)
-                else:
-                    response = await self._client.post(url, json=payload)
+                headers: dict[str, str] = {}
+                with tracer.start_as_current_span("http.client") as span:
+                    span.set_attribute("http.method", method)
+                    span.set_attribute("http.url", url)
+                    propagate.inject(headers)
+                    if method == "GET":
+                        response = await self._client.get(url, headers=headers)
+                    else:
+                        response = await self._client.post(
+                            url, json=payload, headers=headers
+                        )
                 duration = time.perf_counter() - start
                 try:
                     parsed = response.json()
@@ -124,15 +143,19 @@ class ApiClient:
 
     def _record_request(self, endpoint: str, status_code: int, duration: float) -> None:
         key = (endpoint, status_code)
-        entry = self._request_metrics.get(key)
-        if not entry:
-            entry = {"count": 0, "duration_sum": 0.0}
-            self._request_metrics[key] = entry
-        entry["count"] += 1
-        entry["duration_sum"] += duration
+        with self._metrics_lock:
+            entry = self._request_metrics.get(key)
+            if not entry:
+                entry = {"count": 0, "duration_sum": 0.0}
+                self._request_metrics[key] = entry
+            entry["count"] += 1
+            entry["duration_sum"] += duration
 
     def metrics_snapshot(self) -> dict[tuple[str, int], dict[str, float]]:
-        return dict(self._request_metrics)
+        with self._metrics_lock:
+            return dict(self._request_metrics)
 
     def circuit_open(self) -> bool:
-        return bool(self._circuit_open_until and time.monotonic() < self._circuit_open_until)
+        return bool(
+            self._circuit_open_until and time.monotonic() < self._circuit_open_until
+        )

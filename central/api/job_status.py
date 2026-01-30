@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 from fastapi import WebSocket
+from fastapi.websockets import WebSocketDisconnect
 
 
 class JobStatusHub:
@@ -35,7 +36,7 @@ class JobStatusHub:
         for socket in sockets:
             try:
                 await socket.send_json(payload)
-            except Exception:
+            except (WebSocketDisconnect, ConnectionError, RuntimeError):
                 await self.disconnect(job_id, socket)
 
 

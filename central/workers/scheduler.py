@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import logging
+from datetime import UTC, datetime
 
 from central.core.celery_config import celery_app
 from central.core.logging import log_info, log_warning
@@ -12,7 +12,7 @@ from central.workers.exports import export_inventory_task
 
 @celery_app.task(name="workers.dispatch_export_schedules")
 def dispatch_export_schedules_task(limit: int = 100) -> dict[str, int]:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     triggered = 0
     skipped = 0
     with get_session() as session:

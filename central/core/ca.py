@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from cryptography import x509
@@ -28,11 +28,13 @@ class CertificateAuthority:
         self._cert_path.parent.mkdir(parents=True, exist_ok=True)
         self._private_key, self._ca_cert = self._load_or_create_ca()
 
-    def issue_certificate(self, csr_pem: str) -> tuple[str, str, str, datetime, datetime, str]:
+    def issue_certificate(
+        self, csr_pem: str
+    ) -> tuple[str, str, str, datetime, datetime, str]:
         csr = x509.load_pem_x509_csr(csr_pem.encode("utf-8"))
         if not csr.is_signature_valid:
             raise ValueError("CSR signature is invalid")
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         cert = (
             x509.CertificateBuilder()
             .subject_name(csr.subject)
@@ -41,27 +43,40 @@ class CertificateAuthority:
             .serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(minutes=1))
             .not_valid_after(now + timedelta(days=self._settings.cert_valid_days))
-            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(
+                x509.BasicConstraints(ca=False, path_length=None), critical=True
+            )
             .sign(self._private_key, hashes.SHA256())
         )
         cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
         ca_pem = self._ca_cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
         fingerprint = cert.fingerprint(hashes.SHA256()).hex()
         serial = format(cert.serial_number, "x")
-        return cert_pem, serial, fingerprint, cert.not_valid_before, cert.not_valid_after, ca_pem
+        return (
+            cert_pem,
+            serial,
+            fingerprint,
+            cert.not_valid_before,
+            cert.not_valid_after,
+            ca_pem,
+        )
 
     def _load_or_create_ca(self) -> tuple[rsa.RSAPrivateKey, x509.Certificate]:
         if self._key_path.exists() and self._cert_path.exists():
-            key = serialization.load_pem_private_key(self._key_path.read_bytes(), password=None)
+            key = serialization.load_pem_private_key(
+                self._key_path.read_bytes(), password=None
+            )
             cert = x509.load_pem_x509_certificate(self._cert_path.read_bytes())
             return key, cert
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         subject = x509.Name(
             [
                 x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
                 x509.NameAttribute(NameOID.ORGANIZATION_NAME, "InfraCensus"),
-                x509.NameAttribute(NameOID.COMMON_NAME, self._settings.subject_common_name),
+                x509.NameAttribute(
+                    NameOID.COMMON_NAME, self._settings.subject_common_name
+                ),
             ]
         )
         cert = (

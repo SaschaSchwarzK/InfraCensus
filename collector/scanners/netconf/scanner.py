@@ -10,7 +10,9 @@ from collector.scanners.base import BaseScanner, ScanResult
 class NetconfScanner(BaseScanner):
     name = "netconf"
 
-    async def scan(self, targets: list[str], params: dict[str, Any]) -> list[ScanResult]:
+    async def scan(
+        self, targets: list[str], params: dict[str, Any]
+    ) -> list[ScanResult]:
         results = []
         timeout = int(params.get("timeout", 10))
         port = int(params.get("port", 830))
@@ -35,11 +37,11 @@ async def _tcp_probe(target: str, port: int, timeout: int) -> bool:
             asyncio.open_connection(target, port),
             timeout=timeout,
         )
-    except (OSError, asyncio.TimeoutError):
+    except (TimeoutError, OSError):
         return False
     writer.close()
     try:
         await writer.wait_closed()
-    except Exception:
+    except (ConnectionError, OSError, RuntimeError):
         pass
     return True

@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import logging
+from datetime import UTC, datetime, timedelta
 
 from central.core.celery_config import celery_app
 from central.core.logging import log_info
 from central.db.models import Observation
 from central.db.session import get_session
-import logging
 
 
-@celery_app.task(name='workers.cleanup_old_observations')
+@celery_app.task(name="workers.cleanup_old_observations")
 def cleanup_old_observations_task(days_old: int = 90) -> dict:
-    cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_old)
+    cutoff_date = datetime.now(UTC) - timedelta(days=days_old)
     with get_session() as session:
         deleted = (
             session.query(Observation)
@@ -28,4 +28,4 @@ def cleanup_old_observations_task(days_old: int = 90) -> dict:
         deleted=deleted,
         days_old=days_old,
     )
-    return {'deleted': deleted, 'cutoff_date': cutoff_date.isoformat()}
+    return {"deleted": deleted, "cutoff_date": cutoff_date.isoformat()}

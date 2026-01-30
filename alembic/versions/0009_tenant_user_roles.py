@@ -6,9 +6,9 @@ Create Date: 2024-01-09 00:00:00.000000
 
 """
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision = "0009_tenant_user_roles"
 down_revision = "0008_user_password_nullable"

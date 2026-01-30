@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
-from datetime import datetime, timezone
 import logging
+from datetime import UTC, datetime
+from typing import Any
 
 from central.core.celery_config import celery_app
 from central.core.logging import log_info, log_warning
@@ -35,7 +35,7 @@ def export_inventory_task(
 def _mark_schedule_finished(export_schedule_id: int | None) -> None:
     if export_schedule_id is None:
         return
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     with get_session() as session:
         entry = (
             session.query(ExportSchedule)

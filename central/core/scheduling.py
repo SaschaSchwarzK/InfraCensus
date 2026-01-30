@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import ipaddress
-from typing import Iterable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
-from sqlalchemy.orm import joinedload, Session
 from sqlalchemy import or_
+from sqlalchemy.orm import Session, joinedload
 
 from central.core.config import settings
+from central.core.metrics import job_assigned_counter
+from central.core.parsing import parse_int_list, parse_labels, parse_str_list
 from central.db.models import (
     Collector,
     CollectorAffinity,
@@ -36,7 +37,7 @@ def select_jobs_for_collector(
 ) -> list[JobSpec]:
     if max_jobs <= 0:
         return []
-    capabilities = _parse_csv(collector.capabilities)
+    capabilities = _parse_str_list(collector.capabilities)
     labels = _parse_labels(collector.labels)
     capacity = _collector_capacity(labels)
     inflight = _collector_inflight(session, collector.id)
@@ -61,9 +62,23 @@ def select_jobs_for_collector(
         .filter(ScanScheduleType.actual_start_at_utc.is_(None))
         .filter(ScanScheduleType.assigned_collector_id.is_(None))
         .filter(ScanScheduleType.scheduled_at_utc <= now)
-        .filter(or_(ScanScheduleType.not_before_utc.is_(None), ScanScheduleType.not_before_utc <= now))
-        .filter(or_(ScanScheduleType.not_after_utc.is_(None), ScanScheduleType.not_after_utc >= now))
-        .order_by(ScanScheduleType.priority.desc(), ScanScheduleType.scheduled_at_utc.asc(), ScanScheduleType.id.asc())
+        .filter(
+            or_(
+                ScanScheduleType.not_before_utc.is_(None),
+                ScanScheduleType.not_before_utc <= now,
+            )
+        )
+        .filter(
+            or_(
+                ScanScheduleType.not_after_utc.is_(None),
+                ScanScheduleType.not_after_utc >= now,
+            )
+        )
+        .order_by(
+            ScanScheduleType.priority.desc(),
+            ScanScheduleType.scheduled_at_utc.asc(),
+            ScanScheduleType.id.asc(),
+        )
         .all()
     )
 
@@ -78,7 +93,7 @@ def select_jobs_for_collector(
             continue
         if capabilities and entry.scan_type not in capabilities:
             continue
-        network_ids = _parse_csv(schedule.network_ids)
+        network_ids = _parse_int_list(schedule.network_ids)
         if not network_ids:
             continue
         network_map = _load_networks(session, network_ids)
@@ -94,6 +109,10 @@ def select_jobs_for_collector(
         job_id = f"schedule_type:{entry.id}"
         entry.assigned_collector_id = collector.id
         entry.assigned_at_utc = now
+        job_assigned_counter.labels(
+            scan_type=entry.scan_type,
+            tenant_id=str(schedule.tenant_id),
+        ).inc()
         params: dict[str, str | int | float | bool | None | list[str]] = {
             "schedule_id": schedule.id,
             "schedule_type_id": entry.id,
@@ -121,18 +140,20 @@ def select_jobs_for_collector(
 def parse_job_id(job_id: str) -> int | None:
     if not job_id:
         return None
+    value = job_id.strip()
     prefix = "schedule_type:"
-    if not job_id.startswith(prefix):
+    if not value.startswith(prefix):
         return None
-    try:
-        return int(job_id[len(prefix):])
-    except ValueError:
+    suffix = value[len(prefix) :]
+    if not suffix or not suffix.isdigit():
         return None
+    parsed = int(suffix)
+    return parsed if parsed > 0 else None
 
 
 def _release_stale_assignments(session: Session, now: datetime) -> None:
     cutoff = now.timestamp() - settings.scheduler_job_assignment_ttl_seconds
-    stale_before = datetime.fromtimestamp(cutoff, tz=timezone.utc)
+    stale_before = datetime.fromtimestamp(cutoff, tz=UTC)
     session.query(ScanScheduleType).filter(
         ScanScheduleType.assigned_at_utc.isnot(None),
         ScanScheduleType.assigned_at_utc < stale_before,
@@ -174,7 +195,9 @@ def _rate_limit_allows(
         if not record:
             continue
         window_start = record.window_start_at_utc
-        if (now - window_start).total_seconds() >= settings.scheduler_network_rate_limit_window_seconds:
+        if (
+            now - window_start
+        ).total_seconds() >= settings.scheduler_network_rate_limit_window_seconds:
             record.window_start_at_utc = now
             record.count = 0
         if record.count + 1 > settings.scheduler_network_rate_limit_per_minute:
@@ -209,36 +232,21 @@ def _collector_capacity(labels: dict[str, str]) -> int:
     return settings.scheduler_default_capacity
 
 
-def _parse_csv(value: str | None) -> list[int]:
-    if not value:
-        return []
-    values: list[int] = []
-    for item in value.split(","):
-        item = item.strip()
-        if not item:
-            continue
-        try:
-            values.append(int(item))
-        except ValueError:
-            continue
-    return values
+def _parse_int_list(value: str | list[int] | list[str] | None) -> list[int]:
+    return parse_int_list(value)
 
 
-def _parse_labels(raw: str | None) -> dict[str, str]:
-    labels: dict[str, str] = {}
-    if not raw:
-        return labels
-    for entry in raw.split(","):
-        if not entry.strip():
-            continue
-        key, _, value = entry.partition("=")
-        if not key:
-            continue
-        labels[key.strip()] = value.strip()
-    return labels
+def _parse_str_list(value: str | list[str] | None) -> list[str]:
+    return parse_str_list(value)
 
 
-def _within_window(not_before: datetime | None, not_after: datetime | None, now: datetime) -> bool:
+def _parse_labels(raw: str | dict | None) -> dict[str, str]:
+    return parse_labels(raw) or {}
+
+
+def _within_window(
+    not_before: datetime | None, not_after: datetime | None, now: datetime
+) -> bool:
     if not_before and now < not_before:
         return False
     if not_after and now > not_after:
@@ -249,11 +257,7 @@ def _within_window(not_before: datetime | None, not_after: datetime | None, now:
 def _load_networks(session: Session, network_ids: list[int]) -> dict[int, Network]:
     if not network_ids:
         return {}
-    records = (
-        session.query(Network)
-        .filter(Network.id.in_(network_ids))
-        .all()
-    )
+    records = session.query(Network).filter(Network.id.in_(network_ids)).all()
     return {record.id: record for record in records}
 
 
