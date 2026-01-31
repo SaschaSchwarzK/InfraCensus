@@ -41,6 +41,7 @@ class SnmpScanner(BaseScanner):
 
 async def _udp_probe(target: str, port: int, timeout: int) -> bool:
     def _run() -> bool:
+        sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.settimeout(timeout)
@@ -49,9 +50,10 @@ async def _udp_probe(target: str, port: int, timeout: int) -> bool:
         except OSError:
             return False
         finally:
-            try:
-                sock.close()
-            except OSError:
-                pass
+            if sock is not None:
+                try:
+                    sock.close()
+                except (OSError, AttributeError):
+                    pass
 
     return await asyncio.to_thread(_run)

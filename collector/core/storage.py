@@ -8,7 +8,18 @@ from typing import Any
 
 class LocalStorage:
     def __init__(self, root: str) -> None:
-        self.root = Path(root)
+        # Validate root path to prevent path traversal
+        if not root or not isinstance(root, str):
+            raise ValueError("Invalid root path")
+
+        # Resolve and validate the root path
+        root_path = Path(root).resolve()
+
+        # Ensure no path traversal sequences in resolved path
+        if ".." in root_path.parts:
+            raise ValueError(f"Path traversal detected in root path: {root}")
+
+        self.root = root_path
         self.root.mkdir(parents=True, exist_ok=True)
         self._locks: dict[str, Lock] = {}
         self._locks_lock = Lock()
@@ -19,19 +30,36 @@ class LocalStorage:
                 self._locks[name] = Lock()
             return self._locks[name]
 
+    def _validate_name(self, name: str) -> str:
+        """Validate filename to prevent path traversal attacks."""
+        if not name or not isinstance(name, str):
+            raise ValueError("Invalid filename")
+
+        # Remove any path separators and traversal sequences
+        clean_name = name.replace("..", "").replace("/", "").replace("\\", "")
+
+        # Ensure the name is not empty after cleaning
+        if not clean_name or clean_name != name:
+            raise ValueError(f"Invalid filename contains path traversal: {name}")
+
+        return clean_name
+
     def load_json(self, name: str) -> dict[str, Any] | None:
-        path = self.root / name
+        clean_name = self._validate_name(name)
+        path = self.root / clean_name
         if not path.exists():
             return None
         return json.loads(path.read_text(encoding="utf-8"))
 
     def save_json(self, name: str, payload: dict[str, Any]) -> None:
-        path = self.root / name
+        clean_name = self._validate_name(name)
+        path = self.root / clean_name
         path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
     def update_json(self, name: str, update: dict[str, Any]) -> dict[str, Any]:
-        with self._get_lock(name):
-            payload = self.load_json(name) or {}
+        clean_name = self._validate_name(name)
+        with self._get_lock(clean_name):
+            payload = self.load_json(clean_name) or {}
             payload.update(update)
-            self.save_json(name, payload)
+            self.save_json(clean_name, payload)
             return payload

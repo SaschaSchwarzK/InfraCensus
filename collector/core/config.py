@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -215,15 +217,51 @@ def load_config() -> CollectorConfig:
 def _resolve_central_url(config: dict[str, Any]) -> str:
     explicit = _value("CENTRAL_URL", config, "central_url", None)
     if explicit:
-        return str(explicit)
+        # Sanitize explicit URL to prevent XSS
+        return _sanitize_url(str(explicit))
     host = _value("CENTRAL_SERVICE_HOST", config, "central_service_host", None)
     if not host:
         return "https://central.infracensus.local"
+
+    # Sanitize host to prevent XSS
+    host = _sanitize_host(str(host))
+
     scheme = _value("CENTRAL_SERVICE_SCHEME", config, "central_service_scheme", "https")
+    # Validate scheme
+    if scheme not in ["http", "https"]:
+        scheme = "https"
+
     port = _value("CENTRAL_SERVICE_PORT", config, "central_service_port", None)
     if port:
-        return f"{scheme}://{host}:{port}"
+        # Validate port is numeric
+        try:
+            port_num = int(port)
+            if not (1 <= port_num <= 65535):
+                raise ValueError("Invalid port")
+            return f"{scheme}://{host}:{port_num}"
+        except (ValueError, TypeError):
+            return f"{scheme}://{host}"
     return f"{scheme}://{host}"
+
+
+def _sanitize_url(url: str) -> str:
+    """Sanitize URL to prevent XSS attacks."""
+    # HTML escape the URL
+    sanitized = html.escape(url, quote=True)
+    # Validate URL format
+    if not re.match(r"^https?://[a-zA-Z0-9.-]+(?::[0-9]+)?(?:/.*)?$", sanitized):
+        raise ValueError(f"Invalid URL format: {url}")
+    return sanitized
+
+
+def _sanitize_host(host: str) -> str:
+    """Sanitize hostname to prevent XSS attacks."""
+    # HTML escape the host
+    sanitized = html.escape(host, quote=True)
+    # Validate hostname format
+    if not re.match(r"^[a-zA-Z0-9.-]+$", sanitized):
+        raise ValueError(f"Invalid hostname format: {host}")
+    return sanitized
 
 
 def _value(env_key: str, config: dict[str, Any], key: str, default: Any) -> Any:

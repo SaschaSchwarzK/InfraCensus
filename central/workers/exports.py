@@ -27,9 +27,19 @@ def export_inventory_task(
         log_warning(logging.getLogger(__name__), "exporter.unknown", exporter=exporter)
         return {"status": "error", "error": "unknown_exporter"}
     log_info(logging.getLogger(__name__), "exporter.run", exporter=exporter)
-    result = plugin.run(payload)
-    _mark_schedule_finished(export_schedule_id)
-    return {"status": "ok", "exporter": exporter, "result": result}
+    try:
+        result = plugin.run(payload)
+        _mark_schedule_finished(export_schedule_id)
+        return {"status": "ok", "exporter": exporter, "result": result}
+    except Exception as exc:
+        log_warning(
+            logging.getLogger(__name__),
+            "exporter.failed",
+            exporter=exporter,
+            error=str(exc),
+        )
+        _mark_schedule_finished(export_schedule_id)
+        return {"status": "error", "error": str(exc)}
 
 
 def _mark_schedule_finished(export_schedule_id: int | None) -> None:

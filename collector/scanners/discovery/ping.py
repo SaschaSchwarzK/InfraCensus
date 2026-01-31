@@ -39,8 +39,15 @@ async def _ping_target(target: str, timeout: int) -> bool:
                 ["ping", "-c", "1", "-W", str(timeout), target],
                 capture_output=True,
                 text=True,
+                timeout=timeout + 2,  # Add buffer to subprocess timeout
             )
-        except FileNotFoundError:
+        except (
+            FileNotFoundError,
+            subprocess.TimeoutExpired,
+            OSError,
+            ValueError,
+        ):
+            # Handle missing ping command, timeouts, OS errors, and invalid arguments
             return False
         return completed.returncode == 0
 

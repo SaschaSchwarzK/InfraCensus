@@ -23,11 +23,20 @@ class CASettings:
 class CertificateAuthority:
     def __init__(self, settings: CASettings) -> None:
         self._settings = settings
-        self._key_path = Path(settings.key_path)
-        self._cert_path = Path(settings.cert_path)
+        # Validate and sanitize paths to prevent path traversal
+        self._key_path = self._validate_path(settings.key_path)
+        self._cert_path = self._validate_path(settings.cert_path)
         self._key_path.parent.mkdir(parents=True, exist_ok=True)
         self._cert_path.parent.mkdir(parents=True, exist_ok=True)
         self._private_key, self._ca_cert = self._load_or_create_ca()
+
+    def _validate_path(self, path_str: str) -> Path:
+        """Validate and resolve path to prevent traversal attacks."""
+        path = Path(path_str).resolve()
+        # Ensure the resolved path doesn't contain traversal sequences
+        if ".." in path.parts:
+            raise ValueError(f"Path traversal detected in: {path_str}")
+        return path
 
     def issue_certificate(
         self, csr_pem: str

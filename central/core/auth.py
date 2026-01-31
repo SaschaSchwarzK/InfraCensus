@@ -45,7 +45,11 @@ def has_tenant_access(
             continue
         roles = parse_roles(membership.roles, membership.role)
         effective = highest_role(roles)
-        return ROLE_ORDER[effective] >= ROLE_ORDER[required]
+        try:
+            return ROLE_ORDER[effective] >= ROLE_ORDER[required]
+        except KeyError:
+            # Handle unknown roles by denying access
+            return False
     return False
 
 

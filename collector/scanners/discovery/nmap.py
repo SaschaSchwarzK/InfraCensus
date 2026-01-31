@@ -15,21 +15,46 @@ class NmapScanner(BaseScanner):
     async def scan(
         self, targets: list[str], params: dict[str, Any]
     ) -> list[ScanResult]:
-        results = []
         timeout = int(params.get("timeout", 30))
+
+        # Process targets concurrently for better performance
+        tasks = []
         for target in targets:
-            start = time.perf_counter()
-            success, output = await _run_nmap(target, timeout)
-            results.append(
-                ScanResult(
-                    ip=target,
-                    success=success,
-                    duration_ms=int((time.perf_counter() - start) * 1000),
-                    data={"status": "probe", "scanner": self.name, "output": output},
-                    error=None if success else "nmap_failed",
+            task = asyncio.create_task(self._scan_single_target(target, timeout))
+            tasks.append(task)
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Handle any exceptions that occurred
+        final_results: list[ScanResult] = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                final_results.append(
+                    ScanResult(
+                        ip=targets[i],
+                        success=False,
+                        duration_ms=0,
+                        data={"status": "error", "scanner": self.name},
+                        error=str(result),
+                    )
                 )
-            )
-        return results
+            else:
+                # Type checker now knows result is ScanResult
+                assert isinstance(result, ScanResult)
+                final_results.append(result)
+
+        return final_results
+
+    async def _scan_single_target(self, target: str, timeout: int) -> ScanResult:
+        start = time.perf_counter()
+        success, output = await _run_nmap(target, timeout)
+        return ScanResult(
+            ip=target,
+            success=success,
+            duration_ms=int((time.perf_counter() - start) * 1000),
+            data={"status": "probe", "scanner": self.name, "output": output},
+            error=None if success else "nmap_failed",
+        )
 
 
 async def _run_nmap(target: str, timeout: int) -> tuple[bool, str]:

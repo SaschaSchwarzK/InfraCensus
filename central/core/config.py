@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
@@ -208,7 +210,27 @@ def register_settings_listener(listener: Callable[[Settings], None]) -> None:
 
 def get_config_poll_seconds() -> int:
     if os.getenv("CONFIG_POLL_SECONDS"):
-        return int(os.getenv("CONFIG_POLL_SECONDS", "0"))
+        try:
+            value = os.getenv("CONFIG_POLL_SECONDS", "0")
+            # Validate that the value is a safe integer to prevent OS command injection
+            if not value or not isinstance(value, str):
+                raise ValueError(f"Invalid CONFIG_POLL_SECONDS type: {type(value)}")
+            # Remove any non-digit characters to prevent injection
+            clean_value = "".join(c for c in value if c.isdigit())
+            if not clean_value or clean_value != value:
+                raise ValueError(
+                    f"Invalid CONFIG_POLL_SECONDS value contains non-digits: {value}"
+                )
+            poll_seconds = int(clean_value)
+            # Ensure reasonable bounds to prevent resource exhaustion
+            if poll_seconds < 0 or poll_seconds > 86400:  # Max 24 hours
+                raise ValueError(
+                    f"CONFIG_POLL_SECONDS must be between 0 and 86400, got: {poll_seconds}"
+                )
+            return poll_seconds
+        except (ValueError, TypeError) as exc:
+            logger.warning(f"Invalid CONFIG_POLL_SECONDS value, using default: {exc}")
+            return 60 if _config_source.git_url else 0
     return 60 if _config_source.git_url else 0
 
 

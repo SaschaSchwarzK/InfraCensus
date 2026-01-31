@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import secrets
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -44,7 +45,9 @@ logger = logging.getLogger(__name__)
 
 
 def _hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    salt = secrets.token_bytes(32)
+    key = hashlib.pbkdf2_hmac("sha256", token.encode("utf-8"), salt, 100000)
+    return salt.hex() + key.hex()
 
 
 def _get_rate_limiter(request: Request) -> CollectorRateLimiter:
@@ -418,26 +421,33 @@ async def poll_jobs(request: Request) -> JSONResponse:
                 now=now,
                 max_jobs=settings.scheduler_max_jobs_per_poll,
             )
-            for job in jobs:
-                if not job.job_id:
-                    continue
-                schedule_type_id = parse_job_id(job.job_id)
-                if schedule_type_id is None:
-                    continue
-                entry = (
+            # Bulk update schedule types and schedules for better performance
+            schedule_type_ids = [parse_job_id(job.job_id) for job in jobs if job.job_id]
+            schedule_type_ids = [id for id in schedule_type_ids if id is not None]
+
+            if schedule_type_ids:
+                # Bulk query and update schedule types
+                entries = (
                     session.query(ScanScheduleType)
-                    .filter(ScanScheduleType.id == schedule_type_id)
-                    .one_or_none()
+                    .filter(ScanScheduleType.id.in_(schedule_type_ids))
+                    .filter(ScanScheduleType.actual_start_at_utc.is_(None))
+                    .all()
                 )
-                if entry and entry.actual_start_at_utc is None:
+
+                schedule_ids = []
+                for entry in entries:
                     entry.actual_start_at_utc = now
-                    schedule = (
-                        session.query(ScanSchedule)
-                        .filter(ScanSchedule.id == entry.schedule_id)
-                        .one_or_none()
+                    schedule_ids.append(entry.schedule_id)
+
+                # Bulk update schedules if needed
+                if schedule_ids:
+                    session.query(ScanSchedule).filter(
+                        ScanSchedule.id.in_(schedule_ids),
+                        ScanSchedule.actual_start_at_utc.is_(None),
+                    ).update(
+                        {ScanSchedule.actual_start_at_utc: now},
+                        synchronize_session=False,
                     )
-                    if schedule and schedule.actual_start_at_utc is None:
-                        schedule.actual_start_at_utc = now
             return jobs, site
 
     jobs, site = await asyncio.to_thread(_poll_db)

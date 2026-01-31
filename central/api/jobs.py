@@ -37,7 +37,15 @@ def _is_authorized(websocket: WebSocket) -> bool:
             details={"reason": "missing_api_key"},
         )
         return False
-    scopes = get_api_key_scopes(settings.api_keys, key, settings.api_key_pepper)
+    try:
+        scopes = get_api_key_scopes(settings.api_keys, key, settings.api_key_pepper)
+    except (ValueError, TypeError, KeyError) as exc:
+        log_security_event(
+            action="jobs.websocket.denied",
+            outcome="error",
+            details={"reason": "api_key_validation_error", "error": str(exc)},
+        )
+        return False
     allowed = "jobs:read" in scopes or "*" in scopes
     if not allowed:
         log_security_event(

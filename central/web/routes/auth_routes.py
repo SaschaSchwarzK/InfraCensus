@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -20,7 +22,8 @@ def login_form(request: Request) -> WebResponse:
         oauth = get_oauth()
         return oauth.okta.authorize_redirect(request, settings.oidc_redirect_uri)
     return templates.TemplateResponse(
-        "login.html", {"request": request, "auth_mode": settings.auth_mode}
+        "login.html",
+        {"request": request, "auth_mode": html.escape(str(settings.auth_mode))},
     )
 
 

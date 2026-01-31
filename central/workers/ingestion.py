@@ -48,7 +48,7 @@ class IngestScanResultTask(DeduplicatedTask):
         protocol_value = self._normalize_protocol(protocol)
         collected_at = self._coerce_datetime(metadata.get("collected_at_utc"))
         with get_session() as session:
-            observation_ids = []
+            observations = []
             for result in results:
                 obs = Observation(
                     scan_run_id=scan_run_id,
@@ -63,9 +63,11 @@ class IngestScanResultTask(DeduplicatedTask):
                     evidence_hash=self._compute_hash(result),
                     parser_version="1.0.0",
                 )
-                session.add(obs)
-                session.flush()
-                observation_ids.append(obs.id)
+                observations.append(obs)
+
+            session.add_all(observations)
+            session.flush()
+            observation_ids = [obs.id for obs in observations]
 
             session.commit()
 

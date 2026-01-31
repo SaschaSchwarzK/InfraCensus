@@ -92,6 +92,19 @@ class ConfigSource:
     async def _run_git(self, args: list[str], cwd: Path | None = None) -> None:
         if not args or not args[0]:
             raise ValueError("Invalid git command")
+
+        # Validate git arguments to prevent command injection
+        for arg in args:
+            if not isinstance(arg, str):
+                raise ValueError(f"Invalid git argument type: {type(arg)}")
+            # Check for dangerous characters that could be used for injection
+            if any(
+                char in arg for char in [";", "&", "|", "`", "$", "(", ")", ">", "<"]
+            ):
+                raise ValueError(
+                    f"Potentially dangerous characters in git argument: {arg}"
+                )
+
         process = await asyncio.create_subprocess_exec(
             "git",
             *args,

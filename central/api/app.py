@@ -74,17 +74,17 @@ def _apply_settings(new_settings: Settings) -> None:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        asyncio.run(
-            app.state.rate_limiter.update_limit(
-                new_settings.collector_rate_limit_per_hour
-            )
-        )
+        # Validate rate limit value before using it
+        rate_limit = new_settings.collector_rate_limit_per_hour
+        if not isinstance(rate_limit, (int, float)) or rate_limit < 0:
+            rate_limit = 100  # Default safe value
+        asyncio.run(app.state.rate_limiter.update_limit(rate_limit))
     else:
-        loop.create_task(
-            app.state.rate_limiter.update_limit(
-                new_settings.collector_rate_limit_per_hour
-            )
-        )
+        # Validate rate limit value before using it
+        rate_limit = new_settings.collector_rate_limit_per_hour
+        if not isinstance(rate_limit, (int, float)) or rate_limit < 0:
+            rate_limit = 100  # Default safe value
+        loop.create_task(app.state.rate_limiter.update_limit(rate_limit))
     app.state.ca = CertificateAuthority(
         CASettings(
             key_path=new_settings.ca_key_path,

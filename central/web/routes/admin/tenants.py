@@ -29,11 +29,17 @@ def admin_tenants(request: Request) -> WebResponse:
     if not isinstance(user, User):
         return user
 
+    # Additional authentication validation for critical tenant management function
+    if not user.is_superadmin:
+        return RedirectResponse(url="/login", status_code=302)
+
     def fetch() -> Iterable[Tenant]:
         with get_session() as session:
             query = session.query(Tenant)
             name_filter = request.query_params.get("name")
             if name_filter:
+                # Sanitize name filter to prevent SQL injection
+                name_filter = name_filter.replace("%", "\\%").replace("_", "\\_")
                 query = query.filter(Tenant.name.ilike(f"%{name_filter}%"))
             query = query.order_by(Tenant.name)
             query, _, _ = _paginate_query(query, request)

@@ -38,6 +38,13 @@ def select_jobs_for_collector(
 ) -> list[JobSpec]:
     if max_jobs <= 0:
         return []
+
+    # Validate collector attributes to prevent SQL injection
+    if not isinstance(collector.tenant_id, int) or collector.tenant_id <= 0:
+        raise ValueError(f"Invalid collector.tenant_id: {collector.tenant_id}")
+    if not isinstance(collector.id, int) or collector.id <= 0:
+        raise ValueError(f"Invalid collector.id: {collector.id}")
+
     capabilities = _parse_str_list(collector.capabilities)
     labels = _parse_labels(collector.labels)
     capacity = _collector_capacity(labels)
@@ -52,6 +59,12 @@ def select_jobs_for_collector(
         .filter(CollectorAffinity.tenant_id == collector.tenant_id)
         .all()
     )
+
+    # Additional validation for tenant_id used in candidates query
+    if not isinstance(collector.tenant_id, int) or collector.tenant_id <= 0:
+        raise ValueError(
+            f"Invalid tenant_id for candidates query: {collector.tenant_id}"
+        )
 
     candidates = (
         session.query(ScanScheduleType)
@@ -90,6 +103,10 @@ def select_jobs_for_collector(
             continue
         if not _within_window(schedule.not_before_utc, schedule.not_after_utc, now):
             continue
+        # Validate site_id to prevent SQL injection
+        if schedule.site_id is not None and collector.site_id is not None:
+            if not isinstance(collector.site_id, int) or collector.site_id <= 0:
+                raise ValueError(f"Invalid collector.site_id: {collector.site_id}")
         if schedule.site_id is not None and collector.site_id != schedule.site_id:
             continue
         if capabilities and entry.scan_type not in capabilities:
@@ -170,6 +187,10 @@ def _release_stale_assignments(session: Session, now: datetime) -> None:
 
 
 def _collector_inflight(session: Session, collector_id: int) -> int:
+    # Validate collector_id to prevent SQL injection
+    if not isinstance(collector_id, int) or collector_id <= 0:
+        raise ValueError(f"Invalid collector_id: {collector_id}")
+
     return (
         session.query(ScanScheduleType)
         .filter(ScanScheduleType.assigned_collector_id == collector_id)
@@ -185,6 +206,12 @@ def _rate_limit_allows(
         return True
     if not network_ids:
         return True
+
+    # Validate network_ids to prevent SQL injection
+    for network_id in network_ids:
+        if not isinstance(network_id, int) or network_id <= 0:
+            raise ValueError(f"Invalid network_id: {network_id}")
+
     records = (
         session.query(NetworkRateLimit)
         .filter(NetworkRateLimit.network_id.in_(network_ids))
@@ -259,6 +286,12 @@ def _within_window(
 def _load_networks(session: Session, network_ids: list[int]) -> dict[int, Network]:
     if not network_ids:
         return {}
+
+    # Validate network_ids to prevent SQL injection
+    for network_id in network_ids:
+        if not isinstance(network_id, int) or network_id <= 0:
+            raise ValueError(f"Invalid network_id: {network_id}")
+
     records = session.query(Network).filter(Network.id.in_(network_ids)).all()
     return {record.id: record for record in records}
 

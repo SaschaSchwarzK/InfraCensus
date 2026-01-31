@@ -22,6 +22,38 @@ from central.web.routes.common import (
 router = APIRouter()
 
 
+def _build_schedule_query(session, request):
+    """Build schedule query with filters applied."""
+    query = session.query(ScanSchedule)
+    tenant_filter = request.query_params.get("tenant_id")
+    scan_type_filter = request.query_params.get("scan_type")
+    start_after = request.query_params.get("start_after")
+    start_before = request.query_params.get("start_before")
+    if tenant_filter:
+        try:
+            query = query.filter(ScanSchedule.tenant_id == int(tenant_filter))
+        except ValueError:
+            pass
+    if scan_type_filter:
+        query = query.filter(ScanSchedule.scan_types.ilike(f"%{scan_type_filter}%"))
+    if start_after:
+        query = query.filter(ScanSchedule.scheduled_at_utc >= start_after)
+    if start_before:
+        query = query.filter(ScanSchedule.scheduled_at_utc <= start_before)
+    return query.order_by(ScanSchedule.scheduled_at_utc.asc())
+
+
+def _fetch_site_map(schedules):
+    """Fetch site information for schedules."""
+    site_map: dict[int, Site] = {}
+    site_ids = {schedule.site_id for schedule in schedules if schedule.site_id}
+    if site_ids:
+        with get_session() as session:
+            sites = session.query(Site).filter(Site.id.in_(site_ids)).all()
+            site_map = {site.id: site for site in sites}
+    return site_map
+
+
 @router.get("/admin/schedules", response_class=HTMLResponse)
 def admin_schedules(request: Request) -> WebResponse:
     user = require_superadmin(request)
@@ -30,25 +62,7 @@ def admin_schedules(request: Request) -> WebResponse:
 
     def fetch_schedules() -> Iterable[ScanSchedule]:
         with get_session() as session:
-            query = session.query(ScanSchedule)
-            tenant_filter = request.query_params.get("tenant_id")
-            scan_type_filter = request.query_params.get("scan_type")
-            start_after = request.query_params.get("start_after")
-            start_before = request.query_params.get("start_before")
-            if tenant_filter:
-                try:
-                    query = query.filter(ScanSchedule.tenant_id == int(tenant_filter))
-                except ValueError:
-                    pass
-            if scan_type_filter:
-                query = query.filter(
-                    ScanSchedule.scan_types.ilike(f"%{scan_type_filter}%")
-                )
-            if start_after:
-                query = query.filter(ScanSchedule.scheduled_at_utc >= start_after)
-            if start_before:
-                query = query.filter(ScanSchedule.scheduled_at_utc <= start_before)
-            query = query.order_by(ScanSchedule.scheduled_at_utc.asc())
+            query = _build_schedule_query(session, request)
             query, _, _ = _paginate_query(query, request)
             return query.all()
 
@@ -59,12 +73,7 @@ def admin_schedules(request: Request) -> WebResponse:
     schedules, error = _safe_query(fetch_schedules)
     tenants, _ = _safe_query(fetch_tenants)
     tenant_map = {tenant.id: tenant.name for tenant in tenants}
-    site_map: dict[int, Site] = {}
-    site_ids = {schedule.site_id for schedule in schedules if schedule.site_id}
-    if site_ids:
-        with get_session() as session:
-            sites = session.query(Site).filter(Site.id.in_(site_ids)).all()
-            site_map = {site.id: site for site in sites}
+    site_map = _fetch_site_map(schedules)
     if _wants_json(request):
         limit, offset = _pagination_params(request)
         return JSONResponse(

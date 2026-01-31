@@ -43,8 +43,12 @@ def tenant_users(request: Request, tenant_id: int) -> WebResponse:
             email_filter = request.query_params.get("email")
             role_filter = request.query_params.get("role")
             if email_filter:
+                # Sanitize email filter to prevent SQL injection
+                email_filter = email_filter.replace("%", "\\%").replace("_", "\\_")
                 query = query.filter(User.email.ilike(f"%{email_filter}%"))
             if role_filter:
+                # Sanitize role filter to prevent SQL injection
+                role_filter = role_filter.replace("%", "\\%").replace("_", "\\_")
                 query = query.filter(
                     (TenantUser.roles.ilike(f"%{role_filter}%"))
                     | (TenantUser.role == role_filter)
@@ -171,13 +175,17 @@ async def tenant_user_add(
             session.add(account)
             session.flush()
 
+        # Compute role values once for reuse
+        sorted_role_values = sorted([r.value for r in role_set])
+        roles_str = ",".join(sorted_role_values)
+
         membership = (
             session.query(TenantUser)
             .filter(TenantUser.tenant_id == tenant_id, TenantUser.user_id == account.id)
             .one_or_none()
         )
         if membership:
-            membership.roles = ",".join(sorted({r.value for r in role_set}))
+            membership.roles = roles_str
             membership.role = highest_role(role_set)
         else:
             session.add(
@@ -185,7 +193,7 @@ async def tenant_user_add(
                     tenant_id=tenant_id,
                     user_id=account.id,
                     role=highest_role(role_set),
-                    roles=",".join(sorted({r.value for r in role_set})),
+                    roles=roles_str,
                 )
             )
         log_security_event(
@@ -195,7 +203,7 @@ async def tenant_user_add(
             details={
                 "tenant_id": tenant_id,
                 "user_id": account.id,
-                "roles": sorted([r.value for r in role_set]),
+                "roles": sorted_role_values,
             },
             session=session,
         )
@@ -206,7 +214,7 @@ async def tenant_user_add(
             entity_id=tenant_id,
             details={
                 "user": account.email,
-                "roles": sorted([r.value for r in role_set]),
+                "roles": sorted_role_values,
             },
             session=session,
         )
@@ -215,7 +223,7 @@ async def tenant_user_add(
             {
                 "status": "updated",
                 "email": account.email,
-                "roles": sorted([r.value for r in role_set]),
+                "roles": sorted_role_values,
             }
         )
     return _redirect_with_message(
@@ -277,7 +285,12 @@ async def tenant_user_update_role(
                 f"/tenants/{tenant_id}/users",
                 "Membership not found",
             )
-        membership.roles = ",".join(sorted({r.value for r in role_set}))
+
+        # Compute role values once for reuse
+        sorted_role_values = sorted([r.value for r in role_set])
+        roles_str = ",".join(sorted_role_values)
+
+        membership.roles = roles_str
         membership.role = highest_role(role_set)
         session.flush()
         log_audit(
@@ -285,7 +298,7 @@ async def tenant_user_update_role(
             action="tenant.user.role",
             entity_type="tenant_user",
             entity_id=membership_id,
-            details={"roles": sorted([r.value for r in role_set])},
+            details={"roles": sorted_role_values},
             session=session,
         )
     if wants_json:
@@ -293,7 +306,7 @@ async def tenant_user_update_role(
             {
                 "status": "updated",
                 "membership_id": membership_id,
-                "roles": sorted([r.value for r in role_set]),
+                "roles": sorted_role_values,
             }
         )
     return _redirect_with_message(

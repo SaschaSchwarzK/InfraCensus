@@ -143,7 +143,17 @@ async def tenant_network_create(
             f"/tenants/{tenant_id}/networks",
             "Name and CIDR are required",
         )
-    parsed_site_id = int(site_id) if site_id else None
+    try:
+        parsed_site_id = int(site_id) if site_id else None
+    except (ValueError, TypeError):
+        if wants_json:
+            return JSONResponse(
+                {"error": f"Invalid site_id format: {site_id}"}, status_code=400
+            )
+        return _redirect_with_message(
+            f"/tenants/{tenant_id}/networks",
+            f"Invalid site_id format: {site_id}",
+        )
     with get_session() as session:
         network = Network(
             tenant_id=tenant_id,

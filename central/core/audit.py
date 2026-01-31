@@ -54,15 +54,22 @@ def log_security_event(
                 session=new_session,
             )
         return
-    session.add(
-        AuditLog(
-            actor_user_id=actor_user_id,
-            action=action,
-            entity_type="security_event",
-            entity_id=None,
-            details=json.dumps(payload, sort_keys=True),
+    try:
+        session.add(
+            AuditLog(
+                actor_user_id=actor_user_id,
+                action=action,
+                entity_type="security_event",
+                entity_id=None,
+                details=json.dumps(payload, sort_keys=True),
+            )
         )
-    )
+    except (ValueError, TypeError) as exc:
+        # Handle JSON serialization errors or database constraint violations
+        # Log to stderr as fallback since audit logging failed
+        import sys
+
+        print(f"Failed to log security event: {exc}", file=sys.stderr)
 
 
 def should_sample_security_event(default_rate: float = 0.1) -> bool:

@@ -27,6 +27,12 @@ def admin_audit(request: Request) -> WebResponse:
     if not isinstance(user, User):
         return user
 
+    # Additional authentication validation for critical audit function
+    if not user.is_superadmin:
+        from fastapi.responses import RedirectResponse
+
+        return RedirectResponse(url="/login", status_code=302)
+
     def fetch() -> Iterable[AuditLog]:
         with get_session() as session:
             query = session.query(AuditLog)

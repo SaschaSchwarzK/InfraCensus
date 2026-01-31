@@ -37,8 +37,12 @@ def tenant_sites(request: Request, tenant_id: int) -> WebResponse:
             name_filter = request.query_params.get("name")
             code_filter = request.query_params.get("code")
             if name_filter:
+                # Sanitize name filter to prevent SQL injection
+                name_filter = name_filter.replace("%", "\\%").replace("_", "\\_")
                 query = query.filter(Site.name.ilike(f"%{name_filter}%"))
             if code_filter:
+                # Sanitize code filter to prevent SQL injection
+                code_filter = code_filter.replace("%", "\\%").replace("_", "\\_")
                 query = query.filter(Site.code.ilike(f"%{code_filter}%"))
             query = query.order_by(Site.name)
             query, _, _ = _paginate_query(query, request)

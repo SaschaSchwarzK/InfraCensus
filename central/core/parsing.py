@@ -17,7 +17,11 @@ def parse_iso8601(value: str | None) -> datetime | None:
 
 
 def format_utc(value: datetime) -> str:
-    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    try:
+        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    except (ValueError, OSError, OverflowError) as exc:
+        # Handle invalid datetime values or timezone conversion errors
+        raise ValueError(f"Invalid datetime value for UTC formatting: {exc}") from exc
 
 
 def parse_csv(value: str | None) -> list[str]:

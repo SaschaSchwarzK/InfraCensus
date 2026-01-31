@@ -24,6 +24,20 @@ from central.web.routes.common import (
 router = APIRouter()
 
 
+def _build_user_query(session, request):
+    """Build user query with filters applied."""
+    query = session.query(User)
+    email_filter = request.query_params.get("email")
+    superadmin_filter = request.query_params.get("superadmin")
+    if email_filter:
+        # Sanitize email filter to prevent SQL injection
+        email_filter = email_filter.replace("%", "\\%").replace("_", "\\_")
+        query = query.filter(User.email.ilike(f"%{email_filter}%"))
+    if superadmin_filter in {"true", "false"}:
+        query = query.filter(User.is_superadmin == (superadmin_filter == "true"))
+    return query.order_by(User.email)
+
+
 @router.get("/admin/users", response_class=HTMLResponse)
 def admin_users(request: Request) -> WebResponse:
     user = require_superadmin(request)
@@ -32,16 +46,7 @@ def admin_users(request: Request) -> WebResponse:
 
     def fetch() -> Iterable[User]:
         with get_session() as session:
-            query = session.query(User)
-            email_filter = request.query_params.get("email")
-            superadmin_filter = request.query_params.get("superadmin")
-            if email_filter:
-                query = query.filter(User.email.ilike(f"%{email_filter}%"))
-            if superadmin_filter in {"true", "false"}:
-                query = query.filter(
-                    User.is_superadmin == (superadmin_filter == "true")
-                )
-            query = query.order_by(User.email)
+            query = _build_user_query(session, request)
             query, _, _ = _paginate_query(query, request)
             return query.all()
 

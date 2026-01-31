@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from json import JSONDecodeError
@@ -59,6 +60,10 @@ def tenant_schedules(request: Request, tenant_id: int) -> WebResponse:
                 except ValueError:
                     pass
             if scan_type_filter:
+                # Sanitize scan_type_filter to prevent SQL injection
+                scan_type_filter = scan_type_filter.replace("%", "\\%").replace(
+                    "_", "\\_"
+                )
                 query = query.filter(
                     ScanSchedule.scan_types.ilike(f"%{scan_type_filter}%")
                 )
@@ -147,8 +152,8 @@ def tenant_schedules(request: Request, tenant_id: int) -> WebResponse:
             "tenant_name": tenant.name if tenant else None,
             "error": error,
             "user": user,
-            "message": request.query_params.get("message"),
-            "site_filter": request.query_params.get("site_id"),
+            "message": html.escape(request.query_params.get("message", "")),
+            "site_filter": html.escape(request.query_params.get("site_id", "")),
             "site_map": site_map,
             "site_tz_map": site_tz_map,
             "network_map": network_map,
