@@ -31,7 +31,7 @@ def export_inventory_task(
         result = plugin.run(payload)
         _mark_schedule_finished(export_schedule_id)
         return {"status": "ok", "exporter": exporter, "result": result}
-    except Exception as exc:
+    except (RuntimeError, ValueError, OSError, TypeError, AttributeError, KeyError, ImportError) as exc:
         log_warning(
             logging.getLogger(__name__),
             "exporter.failed",

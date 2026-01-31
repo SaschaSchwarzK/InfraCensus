@@ -95,8 +95,13 @@ def log_event(
     rate = _sample_rate_for_event(event)
     if rate < 1.0 and random.random() > rate:
         return
+    
+    # Cache timestamp and context for performance
+    timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    context = get_log_context()
+    
     payload: dict[str, Any] = {
-        "ts": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "ts": timestamp,
         "level": logging.getLevelName(level).lower(),
         "event": event,
         "service": SERVICE_NAME,
@@ -107,8 +112,7 @@ def log_event(
     trace_id = get_trace_id()
     if trace_id:
         payload["trace_id"] = trace_id
-    for key, value in get_log_context().items():
-        payload.setdefault(key, value)
+    payload.update(context)
     if message:
         payload["message"] = message
     for key, value in fields.items():

@@ -18,7 +18,10 @@ class JobStatusHub:
             self._connections.setdefault(job_id, set()).add(websocket)
             last = self._last_status.get(job_id)
         if last:
-            await websocket.send_json(last)
+            try:
+                await websocket.send_json(last)
+            except (WebSocketDisconnect, ConnectionError, RuntimeError):
+                await self.disconnect(job_id, websocket)
 
     async def disconnect(self, job_id: str, websocket: WebSocket) -> None:
         async with self._lock:
@@ -33,11 +36,15 @@ class JobStatusHub:
         async with self._lock:
             self._last_status[job_id] = payload
             sockets = list(self._connections.get(job_id, set()))
-        for socket in sockets:
+        
+        async def _send_to_socket(socket: WebSocket) -> None:
             try:
                 await socket.send_json(payload)
             except (WebSocketDisconnect, ConnectionError, RuntimeError):
                 await self.disconnect(job_id, socket)
+        
+        if sockets:
+            await asyncio.gather(*[_send_to_socket(socket) for socket in sockets], return_exceptions=True)
 
 
 job_status_hub = JobStatusHub()

@@ -136,6 +136,14 @@ def _build_schedule_queue_depth() -> list[str]:
     return lines
 
 
+def _is_collector_healthy(collector: Collector, now: datetime) -> int:
+    """Determine if collector is healthy based on status and last seen time."""
+    if collector.status != "active" or not collector.last_seen_utc:
+        return 0
+    age_seconds = (now - _to_utc(collector.last_seen_utc)).total_seconds()
+    return 1 if age_seconds <= settings.collector_quarantine_seconds else 0
+
+
 def _build_collector_health() -> list[str]:
     lines = [
         "# HELP central_collector_last_seen_timestamp_seconds Last time collector checked in",
@@ -152,10 +160,8 @@ def _build_collector_health() -> list[str]:
         last_seen = collector.last_seen_utc
         timestamp = _to_utc(last_seen).timestamp() if last_seen else 0.0
         status_value = 1 if collector.status == "active" else 0
-        healthy = 0
-        if collector.status == "active" and last_seen:
-            age_seconds = (now - _to_utc(last_seen)).total_seconds()
-            healthy = 1 if age_seconds <= settings.collector_quarantine_seconds else 0
+        healthy = _is_collector_healthy(collector, now)
+        
         label = _label(
             tenant_id=str(collector.tenant_id),
             collector_id=str(collector.uuid),

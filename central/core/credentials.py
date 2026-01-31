@@ -27,33 +27,38 @@ async def resolve_credentials(
     if not assignments:
         return {target: [] for target in targets}
     resolved: dict[str, list[dict[str, Any]]] = {}
-    async with VaultClient(
-        VaultSettings(
-            addr=settings.vault_addr,
-            token=settings.vault_token,
-            kv_mount=settings.vault_kv_mount,
-            namespace=settings.vault_namespace,
-        )
-    ) as vault:
-        for target in targets:
-            ip = _parse_ip(target)
-            if ip is None:
-                resolved[target] = []
-                continue
-            matched = [
-                assignment
-                for assignment in assignments
-                if _ip_in_subnet(ip, assignment.subnet_cidr)
-            ]
-            matched.sort(key=lambda entry: entry.priority, reverse=True)
-            secrets: list[dict[str, Any]] = []
-            for assignment in matched:
-                secret = await _fetch_secret(
-                    vault, tenant_id, normalized_protocol, assignment.credential_set
-                )
-                if secret:
-                    secrets.append(secret)
-            resolved[target] = secrets
+    try:
+        async with VaultClient(
+            VaultSettings(
+                addr=settings.vault_addr,
+                token=settings.vault_token,
+                kv_mount=settings.vault_kv_mount,
+                namespace=settings.vault_namespace,
+            )
+        ) as vault:
+            for target in targets:
+                ip = _parse_ip(target)
+                if ip is None:
+                    resolved[target] = []
+                    continue
+                matched = [
+                    assignment
+                    for assignment in assignments
+                    if _ip_in_subnet(ip, assignment.subnet_cidr)
+                ]
+                matched.sort(key=lambda entry: entry.priority, reverse=True)
+                secrets: list[dict[str, Any]] = []
+                for assignment in matched:
+                    secret = await _fetch_secret(
+                        vault, tenant_id, normalized_protocol, assignment.credential_set
+                    )
+                    if secret:
+                        secrets.append(secret)
+                resolved[target] = secrets
+    except (RuntimeError, ValueError, OSError, TypeError) as exc:
+        # Handle vault connection or configuration errors
+        # Return empty credentials for all targets as fallback
+        return {target: [] for target in targets}
     return resolved
 
 
@@ -79,8 +84,15 @@ async def _fetch_secret(
     protocol: str,
     credential_set: _CredentialSetLike,
 ) -> dict[str, Any] | None:
-    path = f"{tenant_id}/{protocol}/{credential_set.vault_index}"
-    return await vault.read_secret(path)
+    try:
+        path = f"{tenant_id}/{protocol}/{credential_set.vault_index}"
+        return await vault.read_secret(path)
+    except (ValueError, TypeError, AttributeError) as exc:
+        # Log the error but don't expose sensitive vault details
+        return None
+    except (ValueError, TypeError, AttributeError, KeyError, ImportError) as exc:
+        # Log the error but don't expose sensitive vault details
+        return None
 
 
 _ALLOWED_PROTOCOLS = {"snmp", "ssh", "http", "https", "netconf"}

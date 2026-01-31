@@ -55,8 +55,10 @@ def _apply_settings(new_settings: Settings) -> None:
         SessionLocal = new_session
     try:
         old_engine.dispose()
-    except (SQLAlchemyError, OSError) as exc:
+    except (SQLAlchemyError, OSError, AttributeError) as exc:
         logger.warning("db.engine_dispose_failed", extra={"error": str(exc)})
+    except (RuntimeError, ValueError, OSError, TypeError, AttributeError, KeyError) as exc:
+        logger.error("db.engine_dispose_unexpected_error", extra={"error": str(exc)})
 
 
 register_settings_listener(_apply_settings)

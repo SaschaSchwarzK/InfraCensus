@@ -7,7 +7,27 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from central.core.audit import log_audit, log_security_event
-from central.db.models import Collector, Tenant, TenantUser, User, UserRole
+from central.db.models import (
+    Collector,
+    CollectorAffinity,
+    CollectorCertificate,
+    CollectorEnrollmentToken,
+    CredentialAssignment,
+    CredentialSet,
+    ExportSchedule,
+    InventoryDevice,
+    Network,
+    NetworkRateLimit,
+    Observation,
+    ScanRun,
+    ScanSchedule,
+    ScanScheduleType,
+    Site,
+    Tenant,
+    TenantUser,
+    User,
+    UserRole,
+)
 from central.db.session import get_session
 from central.web.auth import require_superadmin
 from central.web.routes.common import (
@@ -321,20 +341,66 @@ async def admin_tenant_delete(
             },
             session=session,
         )
-        membership_count = (
-            session.query(TenantUser).filter(TenantUser.tenant_id == tenant_id).count()
-        )
-        collector_count = (
-            session.query(Collector).filter(Collector.tenant_id == tenant_id).count()
-        )
-        if membership_count or collector_count:
+        dependency_counts = {
+            "memberships": session.query(TenantUser)
+            .filter(TenantUser.tenant_id == tenant_id)
+            .count(),
+            "collectors": session.query(Collector)
+            .filter(Collector.tenant_id == tenant_id)
+            .count(),
+            "collector_affinities": session.query(CollectorAffinity)
+            .filter(CollectorAffinity.tenant_id == tenant_id)
+            .count(),
+            "collector_certificates": session.query(CollectorCertificate)
+            .filter(CollectorCertificate.tenant_id == tenant_id)
+            .count(),
+            "collector_enrollment_tokens": session.query(CollectorEnrollmentToken)
+            .filter(CollectorEnrollmentToken.tenant_id == tenant_id)
+            .count(),
+            "sites": session.query(Site).filter(Site.tenant_id == tenant_id).count(),
+            "networks": session.query(Network)
+            .filter(Network.tenant_id == tenant_id)
+            .count(),
+            "network_rate_limits": session.query(NetworkRateLimit)
+            .filter(NetworkRateLimit.tenant_id == tenant_id)
+            .count(),
+            "scan_schedules": session.query(ScanSchedule)
+            .filter(ScanSchedule.tenant_id == tenant_id)
+            .count(),
+            "scan_schedule_types": session.query(ScanScheduleType)
+            .filter(ScanScheduleType.tenant_id == tenant_id)
+            .count(),
+            "scan_runs": session.query(ScanRun)
+            .filter(ScanRun.tenant_id == tenant_id)
+            .count(),
+            "observations": session.query(Observation)
+            .filter(Observation.tenant_id == tenant_id)
+            .count(),
+            "inventory_devices": session.query(InventoryDevice)
+            .filter(InventoryDevice.tenant_id == tenant_id)
+            .count(),
+            "credential_sets": session.query(CredentialSet)
+            .filter(CredentialSet.tenant_id == tenant_id)
+            .count(),
+            "credential_assignments": session.query(CredentialAssignment)
+            .filter(CredentialAssignment.tenant_id == tenant_id)
+            .count(),
+            "export_schedules": session.query(ExportSchedule)
+            .filter(ExportSchedule.tenant_id == tenant_id)
+            .count(),
+        }
+        blocking = {key: count for key, count in dependency_counts.items() if count}
+        if blocking:
             if wants_json:
                 return JSONResponse(
-                    {"error": "Delete blocked: tenant has memberships or collectors"},
+                    {
+                        "error": "Delete blocked: tenant has dependent records",
+                        "dependencies": blocking,
+                    },
                     status_code=409,
                 )
             return RedirectResponse(
-                url="/admin/tenants?message=Delete%20blocked%3A%20tenant%20has%20memberships%20or%20collectors",
+                url="/admin/tenants?message=Delete%20blocked%3A%20tenant%20has%20dependent%20records",
                 status_code=302,
             )
         session.delete(tenant)

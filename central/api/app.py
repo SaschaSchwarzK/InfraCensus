@@ -36,9 +36,9 @@ app = FastAPI(
     title="InfraCensus Central API",
     version="0.1.0",
     description="Central API for InfraCensus (collectors, scheduling, and web UI).",
-    openapi_url="/openapi.json",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    openapi_url="./openapi.json",
+    docs_url="./docs",
+    redoc_url="./redoc",
 )
 configure_logging()
 configure_tracing("infracensus-central")
@@ -74,16 +74,18 @@ def _apply_settings(new_settings: Settings) -> None:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        # Validate rate limit value before using it
+        # Validate and sanitize rate limit value before using it
         rate_limit = new_settings.collector_rate_limit_per_hour
-        if not isinstance(rate_limit, (int, float)) or rate_limit < 0:
+        if not isinstance(rate_limit, (int, float)) or rate_limit < 0 or rate_limit > 10000:
             rate_limit = 100  # Default safe value
+        rate_limit = int(rate_limit)  # Ensure it's an integer
         asyncio.run(app.state.rate_limiter.update_limit(rate_limit))
     else:
-        # Validate rate limit value before using it
+        # Validate and sanitize rate limit value before using it
         rate_limit = new_settings.collector_rate_limit_per_hour
-        if not isinstance(rate_limit, (int, float)) or rate_limit < 0:
+        if not isinstance(rate_limit, (int, float)) or rate_limit < 0 or rate_limit > 10000:
             rate_limit = 100  # Default safe value
+        rate_limit = int(rate_limit)  # Ensure it's an integer
         loop.create_task(app.state.rate_limiter.update_limit(rate_limit))
     app.state.ca = CertificateAuthority(
         CASettings(
@@ -103,108 +105,93 @@ async def _start_config_watcher() -> None:
     await start_config_polling()
 
 
-@app.middleware("http")
-async def log_requests(request: Request, call_next) -> Response:
+def _setup_request_context(request: Request) -> tuple[str, str | None, str, str]:
     request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
     incoming_trace_id = request.headers.get("x-trace-id")
-    start = time.time()
-    tracer = get_tracer(__name__)
     path = request.url.path
     method = request.method
+    return request_id, incoming_trace_id, path, method
+
+
+def _setup_tracing(request: Request, method: str, path: str) -> tuple[str | None, object]:
+    tracer = get_tracer(__name__)
     ctx = propagate.extract(request.headers)
-    with tracer.start_as_current_span("http.request", context=ctx) as span:
-        span.set_attribute("http.method", method)
-        span.set_attribute("http.route", path)
-        span.set_attribute("http.scheme", request.url.scheme)
-        span.set_attribute("http.target", request.url.path)
-        span.set_attribute("http.host", request.url.hostname or "")
-        trace_context = span.get_span_context()
-        trace_id = f"{trace_context.trace_id:032x}" if trace_context.trace_id else None
+    span = tracer.start_as_current_span("http.request", context=ctx)
+    span.set_attribute("http.method", method)
+    span.set_attribute("http.route", path)
+    span.set_attribute("http.scheme", request.url.scheme)
+    span.set_attribute("http.target", request.url.path)
+    span.set_attribute("http.host", request.url.hostname or "")
+    trace_context = span.get_span_context()
+    trace_id = f"{trace_context.trace_id:032x}" if trace_context.trace_id else None
+    return trace_id, span
+
+
+def _handle_request_error(span, logger, request_id: str, method: str, path: str, start: float, request: Request, exc: Exception) -> None:
+    duration_ms = int((time.time() - start) * 1000)
+    span.set_attribute("http.status_code", 500)
+    span.record_exception(exc)
+    log_error(
+        logger,
+        "http.request",
+        request_id=request_id,
+        method=method,
+        path=path,
+        status_code=500,
+        duration_ms=duration_ms,
+        client_ip=request.client.host if request.client else None,
+        user_id=request.session.get("user_id") if hasattr(request, "session") else None,
+        error=str(exc),
+    )
+
+
+def _add_security_headers(response: Response, request: Request) -> None:
+    if not settings.security_headers_enabled:
+        return
+    response.headers.setdefault("x-content-type-options", "nosniff")
+    response.headers.setdefault("x-frame-options", settings.security_frame_options)
+    response.headers.setdefault("referrer-policy", settings.security_referrer_policy)
+    response.headers.setdefault("content-security-policy", settings.security_csp)
+    response.headers.setdefault("permissions-policy", "geolocation=(), microphone=(), camera=()")
+    if request.url.scheme == "https" and settings.security_hsts_seconds > 0:
+        hsts_value = f"max-age={settings.security_hsts_seconds}"
+        if settings.security_hsts_include_subdomains:
+            hsts_value += "; includeSubDomains"
+        if settings.security_hsts_preload:
+            hsts_value += "; preload"
+        response.headers.setdefault("strict-transport-security", hsts_value)
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next) -> Response:
+    request_id, incoming_trace_id, path, method = _setup_request_context(request)
+    start = time.time()
+    trace_id, span = _setup_tracing(request, method, path)
+    
+    with span:
         set_trace_id(trace_id or incoming_trace_id or request_id)
-        user_id = (
-            request.session.get("user_id") if hasattr(request, "session") else None
-        )
+        user_id = request.session.get("user_id") if hasattr(request, "session") else None
         if user_id is not None:
             set_log_context(user_id=str(user_id))
+        
         try:
             response = await call_next(request)
-        except (RuntimeError, ValueError, OSError) as exc:
-            duration_ms = int((time.time() - start) * 1000)
-            span.set_attribute("http.status_code", 500)
-            span.record_exception(exc)
-            log_error(
-                logger,
-                "http.request",
-                request_id=request_id,
-                method=method,
-                path=path,
-                status_code=500,
-                duration_ms=duration_ms,
-                client_ip=request.client.host if request.client else None,
-                user_id=request.session.get("user_id")
-                if hasattr(request, "session")
-                else None,
-                error=str(exc),
-            )
+        except (RuntimeError, ValueError, OSError, TypeError, AttributeError, KeyError, ImportError) as exc:
+            _handle_request_error(span, logger, request_id, method, path, start, request, exc)
             raise
-        except Exception as exc:
-            duration_ms = int((time.time() - start) * 1000)
-            span.set_attribute("http.status_code", 500)
-            span.record_exception(exc)
-            log_error(
-                logger,
-                "http.request",
-                request_id=request_id,
-                method=method,
-                path=path,
-                status_code=500,
-                duration_ms=duration_ms,
-                client_ip=request.client.host if request.client else None,
-                user_id=request.session.get("user_id")
-                if hasattr(request, "session")
-                else None,
-                error=str(exc),
-            )
-            raise
+        
         duration_ms = int((time.time() - start) * 1000)
         span.set_attribute("http.status_code", response.status_code)
         log_info(
-            logger,
-            "http.request",
-            request_id=request_id,
-            method=method,
-            path=path,
-            status_code=response.status_code,
-            duration_ms=duration_ms,
+            logger, "http.request", request_id=request_id, method=method, path=path,
+            status_code=response.status_code, duration_ms=duration_ms,
             client_ip=request.client.host if request.client else None,
-            user_id=request.session.get("user_id")
-            if hasattr(request, "session")
-            else None,
+            user_id=request.session.get("user_id") if hasattr(request, "session") else None,
         )
+        
         response.headers["x-request-id"] = request_id
         response.headers["x-trace-id"] = trace_id or incoming_trace_id or request_id
-        if settings.security_headers_enabled:
-            response.headers.setdefault("x-content-type-options", "nosniff")
-            response.headers.setdefault(
-                "x-frame-options", settings.security_frame_options
-            )
-            response.headers.setdefault(
-                "referrer-policy", settings.security_referrer_policy
-            )
-            response.headers.setdefault(
-                "content-security-policy", settings.security_csp
-            )
-            response.headers.setdefault(
-                "permissions-policy",
-                "geolocation=(), microphone=(), camera=()",
-            )
-            if request.url.scheme == "https" and settings.security_hsts_seconds > 0:
-                hsts_value = f"max-age={settings.security_hsts_seconds}"
-                if settings.security_hsts_include_subdomains:
-                    hsts_value += "; includeSubDomains"
-                if settings.security_hsts_preload:
-                    hsts_value += "; preload"
-                response.headers.setdefault("strict-transport-security", hsts_value)
+        _add_security_headers(response, request)
         return response
 
 

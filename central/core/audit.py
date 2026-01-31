@@ -19,18 +19,23 @@ def log_audit(
     details: dict[str, Any] | None = None,
     session: Session | None = None,
 ) -> None:
-    payload = json.dumps(details or {}, sort_keys=True)
     if session is None:
         raise ValueError("log_audit requires an active session")
-    session.add(
-        AuditLog(
-            actor_user_id=actor_user_id,
-            action=action,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            details=payload,
+    try:
+        payload = json.dumps(details or {}, sort_keys=True)
+        session.add(
+            AuditLog(
+                actor_user_id=actor_user_id,
+                action=action,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                details=payload,
+            )
         )
-    )
+    except (ValueError, TypeError) as exc:
+        # Handle JSON serialization errors or database constraint violations
+        import sys
+        print(f"Failed to log audit event: {exc}", file=sys.stderr)
 
 
 def log_security_event(
@@ -45,14 +50,19 @@ def log_security_event(
         **(details or {}),
     }
     if session is None:
-        with get_session() as new_session:
-            log_security_event(
-                action=action,
-                outcome=outcome,
-                actor_user_id=actor_user_id,
-                details=details,
-                session=new_session,
-            )
+        try:
+            with get_session() as new_session:
+                log_security_event(
+                    action=action,
+                    outcome=outcome,
+                    actor_user_id=actor_user_id,
+                    details=details,
+                    session=new_session,
+                )
+        except (ValueError, TypeError, RuntimeError) as exc:
+            # Handle database connection or session errors
+            import sys
+            print(f"Failed to create session for security event: {exc}", file=sys.stderr)
         return
     try:
         session.add(

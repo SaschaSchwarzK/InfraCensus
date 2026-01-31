@@ -33,6 +33,10 @@ class ArpScanner(BaseScanner):
 
 
 async def _lookup_arp(target: str, timeout: int) -> tuple[bool, str]:
+    # Validate target to prevent command injection
+    if not target or any(char in target for char in [";", "&", "|", "`", "$", "\n", "\r"]):
+        return False, "invalid_target"
+    
     def _run() -> tuple[bool, str]:
         try:
             completed = subprocess.run(

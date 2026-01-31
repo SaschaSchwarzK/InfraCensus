@@ -33,6 +33,10 @@ class PingScanner(BaseScanner):
 
 
 async def _ping_target(target: str, timeout: int) -> bool:
+    # Validate target to prevent command injection
+    if not target or any(char in target for char in [";", "&", "|", "`", "$", "\n", "\r"]):
+        return False
+    
     def _run() -> bool:
         try:
             completed = subprocess.run(

@@ -2,23 +2,23 @@
 
 [[package]]
 name = "alembic"
-version = "1.13.2"
+version = "1.18.3"
 description = "A database migration tool for SQLAlchemy."
 optional = false
-python-versions = ">=3.8"
+python-versions = ">=3.10"
 groups = ["central"]
 files = [
-    {file = "alembic-1.13.2-py3-none-any.whl", hash = "sha256:6b8733129a6224a9a711e17c99b08462dbf7cc9670ba8f2e2ae9af860ceb1953"},
-    {file = "alembic-1.13.2.tar.gz", hash = "sha256:1ff0ae32975f4fd96028c39ed9bb3c867fe3af956bd7bb37343b54c9fe7445ef"},
+    {file = "alembic-1.18.3-py3-none-any.whl", hash = "sha256:12a0359bfc068a4ecbb9b3b02cf77856033abfdb59e4a5aca08b7eacd7b74ddd"},
+    {file = "alembic-1.18.3.tar.gz", hash = "sha256:1212aa3778626f2b0f0aa6dd4e99a5f99b94bd25a0c1ac0bba3be65e081e50b0"},
 ]
 
 [package.dependencies]
 Mako = "*"
-SQLAlchemy = ">=1.3.0"
-typing-extensions = ">=4"
+SQLAlchemy = ">=1.4.23"
+typing-extensions = ">=4.12"
 
 [package.extras]
-tz = ["backports.zoneinfo"]
+tz = ["tzdata"]
 
 [[package]]
 name = "annotated-types"
@@ -52,14 +52,14 @@ trio = ["trio (>=0.31.0)", "trio (>=0.32.0)"]
 
 [[package]]
 name = "authlib"
-version = "1.3.1"
+version = "1.6.6"
 description = "The ultimate Python library in building OAuth and OpenID Connect servers and clients."
 optional = false
-python-versions = ">=3.8"
+python-versions = ">=3.9"
 groups = ["central"]
 files = [
-    {file = "Authlib-1.3.1-py2.py3-none-any.whl", hash = "sha256:d35800b973099bbadc49b42b256ecb80041ad56b7fe1216a362c7943c088f377"},
-    {file = "authlib-1.3.1.tar.gz", hash = "sha256:7ae843f03c06c5c0debd63c9db91f9fda64fa62a42a77419fa15fbb7e7a58917"},
+    {file = "authlib-1.6.6-py2.py3-none-any.whl", hash = "sha256:7d9e9bc535c13974313a87f53e8430eb6ea3d1cf6ae4f6efcd793f2e949143fd"},
+    {file = "authlib-1.6.6.tar.gz", hash = "sha256:45770e8e056d0f283451d9996fbb59b70d45722b45d854d58f32878d0a40c38e"},
 ]
 
 [package.dependencies]
@@ -1720,4 +1720,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.14"
-content-hash = "b69939d61e735be9eb117bdd0328ae36fd7d598873fbfd016ea408fe1c4d49d3"
+content-hash = "cddff4fee9b7031a06cdca7702d164cc6a2142c73b131ef31e2bc4f6b533ff41"

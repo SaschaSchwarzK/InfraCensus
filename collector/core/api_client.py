@@ -33,7 +33,7 @@ class ApiClient:
     ) -> None:
         self._base_url = base_url.rstrip("/") + "/"
         self._client = httpx.AsyncClient(
-            timeout=timeout,
+            timeout=httpx.Timeout(timeout),
             verify=verify,
             cert=cert,
         )
@@ -110,10 +110,11 @@ class ApiClient:
                 duration = time.perf_counter() - start
                 try:
                     parsed = response.json()
-                except ValueError:
+                except (ValueError, TypeError, AttributeError) as exc:
                     parsed = {
                         "error": "invalid_json",
                         "text": response.text[:2000],
+                        "parse_error": str(exc),
                     }
                 await self._record_request(path, response.status_code, duration)
                 if 200 <= response.status_code < 300:

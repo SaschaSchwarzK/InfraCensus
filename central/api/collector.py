@@ -50,6 +50,20 @@ def _hash_token(token: str) -> str:
     return salt.hex() + key.hex()
 
 
+def _verify_token(token: str, stored_hash: str) -> bool:
+    if not stored_hash:
+        return False
+    try:
+        if len(stored_hash) < 128:
+            return False
+        salt = bytes.fromhex(stored_hash[:64])
+        expected = bytes.fromhex(stored_hash[64:])
+    except ValueError:
+        return False
+    derived = hashlib.pbkdf2_hmac("sha256", token.encode("utf-8"), salt, 100000)
+    return secrets.compare_digest(derived, expected)
+
+
 def _get_rate_limiter(request: Request) -> CollectorRateLimiter:
     return request.app.state.rate_limiter
 
@@ -180,17 +194,20 @@ async def enroll(request: Request) -> JSONResponse:
         return JSONResponse({"error": "rate_limited"}, status_code=429)
 
     ca = _get_ca(request)
-    token_hash = _hash_token(token)
-    now = datetime.now(UTC)
-
     def _enroll_db() -> tuple[str, str, str, int, int | None]:
+        now = datetime.now(UTC)
         with get_session() as session:
-            record = (
+            records = (
                 session.query(CollectorEnrollmentToken)
-                .filter(CollectorEnrollmentToken.token_hash == token_hash)
-                .one_or_none()
+                .filter(CollectorEnrollmentToken.used_at.is_(None))
+                .filter(CollectorEnrollmentToken.expires_at > now)
+                .all()
             )
-            if not record or record.used_at or record.expires_at <= now:
+            record = next(
+                (entry for entry in records if _verify_token(token, entry.token_hash)),
+                None,
+            )
+            if not record:
                 raise RuntimeError("invalid_or_expired_token")
             collector = Collector(
                 tenant_id=record.tenant_id,

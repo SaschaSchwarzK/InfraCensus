@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import secrets
+
+from passlib.context import CryptContext
 
 from central.db.models import TenantUser, UserRole
+
+# Secure password hashing context using Argon2
+pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
+
 
 ROLE_ORDER = {
     UserRole.read_only: 1,
@@ -69,11 +76,14 @@ def parse_api_keys(value: str | None) -> dict[str, set[str]]:
 
 
 def _hash_api_key(api_key: str, pepper: str | None = None) -> str:
+    """Hash API key using secure Argon2 algorithm."""
     if pepper:
-        return hmac.new(
+        # Use HMAC with pepper for additional security
+        salted_key = hmac.new(
             pepper.encode("utf-8"), api_key.encode("utf-8"), hashlib.sha256
         ).hexdigest()
-    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+        return pwd_context.hash(salted_key)
+    return pwd_context.hash(api_key)
 
 
 def get_api_key_scopes(
@@ -81,8 +91,19 @@ def get_api_key_scopes(
 ) -> set[str]:
     if not value or not api_key:
         return set()
-    key_hash = _hash_api_key(api_key, pepper)
     for stored_hash, scopes in parse_api_keys(value).items():
-        if hmac.compare_digest(stored_hash, key_hash):
-            return scopes
+        # Use secure verification for Argon2 hashes
+        try:
+            if pepper:
+                salted_key = hmac.new(
+                    pepper.encode("utf-8"), api_key.encode("utf-8"), hashlib.sha256
+                ).hexdigest()
+                if pwd_context.verify(salted_key, stored_hash):
+                    return scopes
+            else:
+                if pwd_context.verify(api_key, stored_hash):
+                    return scopes
+        except ValueError:
+            # Handle invalid hash format, continue to next
+            continue
     return set()
