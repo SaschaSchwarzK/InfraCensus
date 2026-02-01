@@ -107,3 +107,23 @@ def get_api_key_scopes(
             # Handle invalid hash format, continue to next
             continue
     return set()
+
+
+def hash_token(token: str) -> str:
+    salt = secrets.token_bytes(32)
+    key = hashlib.pbkdf2_hmac("sha256", token.encode("utf-8"), salt, 100000)
+    return salt.hex() + key.hex()
+
+
+def verify_token(token: str, stored_hash: str) -> bool:
+    if not stored_hash:
+        return False
+    try:
+        if len(stored_hash) < 128:
+            return False
+        salt = bytes.fromhex(stored_hash[:64])
+        expected = bytes.fromhex(stored_hash[64:])
+    except ValueError:
+        return False
+    derived = hashlib.pbkdf2_hmac("sha256", token.encode("utf-8"), salt, 100000)
+    return secrets.compare_digest(derived, expected)

@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
+import json
 import logging
-import secrets
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
+from starlette.requests import ClientDisconnect
 
 from central.api.job_status import job_status_hub
 from central.core.audit import log_security_event
+from central.core.auth import verify_token
 from central.core.ca import CertificateAuthority
 from central.core.config import settings
 from central.core.credentials import resolve_credentials
@@ -43,25 +44,32 @@ from central.db.session import get_session
 router = APIRouter(prefix="/collectors", tags=["collectors"])
 logger = logging.getLogger(__name__)
 
-
-def _hash_token(token: str) -> str:
-    salt = secrets.token_bytes(32)
-    key = hashlib.pbkdf2_hmac("sha256", token.encode("utf-8"), salt, 100000)
-    return salt.hex() + key.hex()
+MAX_RESULT_SIZE_BYTES = 10 * 1024 * 1024
+MAX_RESULTS_PER_JOB = 10000
+_MAX_CLOCK_SKEW_SECONDS = 365 * 24 * 60 * 60
 
 
-def _verify_token(token: str, stored_hash: str) -> bool:
-    if not stored_hash:
-        return False
+async def _parse_limited_json(
+    request: Request, max_size_bytes: int = MAX_RESULT_SIZE_BYTES
+) -> dict[str, Any]:
     try:
-        if len(stored_hash) < 128:
-            return False
-        salt = bytes.fromhex(stored_hash[:64])
-        expected = bytes.fromhex(stored_hash[64:])
-    except ValueError:
-        return False
-    derived = hashlib.pbkdf2_hmac("sha256", token.encode("utf-8"), salt, 100000)
-    return secrets.compare_digest(derived, expected)
+        body = await asyncio.wait_for(request.body(), timeout=30.0)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=408, detail="Request body read timeout") from exc
+    except ClientDisconnect as exc:
+        raise HTTPException(status_code=499, detail="Client disconnected") from exc
+    if len(body) > max_size_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Payload too large: {len(body)} bytes (max: {max_size_bytes})",
+        )
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Payload must be a JSON object")
+    return payload
 
 
 def _get_rate_limiter(request: Request) -> CollectorRateLimiter:
@@ -138,8 +146,11 @@ def _update_clock_skew(
     collector_time = _parse_collector_time(collector_time_utc)
     if collector_time is None:
         return
-    skew = int((collector_time - server_time).total_seconds())
-    collector.clock_skew_seconds = skew
+    delta = collector_time - server_time
+    total_seconds = delta.total_seconds()
+    if abs(total_seconds) > _MAX_CLOCK_SKEW_SECONDS:
+        return
+    collector.clock_skew_seconds = int(total_seconds)
 
 
 def _parse_collector_time(collector_time_utc: str | None) -> datetime | None:
@@ -152,7 +163,18 @@ def _enforce_clock_skew(
     collector_time = _parse_collector_time(collector_time_utc)
     if collector_time is None:
         return False, None
-    skew = int((collector_time - server_time).total_seconds())
+    delta = collector_time - server_time
+    total_seconds = delta.total_seconds()
+    if abs(total_seconds) > _MAX_CLOCK_SKEW_SECONDS:
+        log_warning(
+            logger,
+            "collector.clock_skew_extreme",
+            skew_seconds=total_seconds,
+            collector_time=collector_time.isoformat(),
+            server_time=server_time.isoformat(),
+        )
+        return False, None
+    skew = int(total_seconds)
     if abs(skew) > settings.collector_clock_skew_max_seconds:
         return False, skew
     return True, skew
@@ -204,7 +226,7 @@ async def enroll(request: Request) -> JSONResponse:
                 .all()
             )
             record = next(
-                (entry for entry in records if _verify_token(token, entry.token_hash)),
+                (entry for entry in records if verify_token(token, entry.token_hash)),
                 None,
             )
             if not record:
@@ -443,20 +465,20 @@ async def poll_jobs(request: Request) -> JSONResponse:
             schedule_type_ids = [id for id in schedule_type_ids if id is not None]
 
             if schedule_type_ids:
-                # Bulk query and update schedule types
-                entries = (
-                    session.query(ScanScheduleType)
-                    .filter(ScanScheduleType.id.in_(schedule_type_ids))
-                    .filter(ScanScheduleType.actual_start_at_utc.is_(None))
-                    .all()
+                session.query(ScanScheduleType).filter(
+                    ScanScheduleType.id.in_(schedule_type_ids),
+                    ScanScheduleType.actual_start_at_utc.is_(None),
+                ).update(
+                    {ScanScheduleType.actual_start_at_utc: now},
+                    synchronize_session=False,
                 )
-
-                schedule_ids = []
-                for entry in entries:
-                    entry.actual_start_at_utc = now
-                    schedule_ids.append(entry.schedule_id)
-
-                # Bulk update schedules if needed
+                schedule_ids = [
+                    row[0]
+                    for row in session.query(ScanScheduleType.schedule_id)
+                    .filter(ScanScheduleType.id.in_(schedule_type_ids))
+                    .distinct()
+                    .all()
+                ]
                 if schedule_ids:
                     session.query(ScanSchedule).filter(
                         ScanSchedule.id.in_(schedule_ids),
@@ -602,7 +624,24 @@ async def submit_result(request: Request) -> JSONResponse:
             details={"reason": "rate_limited", "collector_id": collector.uuid},
         )
         return JSONResponse({"error": "rate_limited"}, status_code=429)
-    payload: dict[str, Any] = await request.json()
+    payload = await _parse_limited_json(request)
+    results = payload.get("results") or []
+    if not isinstance(results, list):
+        return JSONResponse({"error": "results must be array"}, status_code=400)
+    if len(results) > MAX_RESULTS_PER_JOB:
+        log_warning(
+            logger,
+            "collector.result_failed",
+            reason="too_many_results",
+            count=len(results),
+            limit=MAX_RESULTS_PER_JOB,
+        )
+        return JSONResponse(
+            {
+                "error": f"Too many results: {len(results)} (max: {MAX_RESULTS_PER_JOB})"
+            },
+            status_code=400,
+        )
     job_id = payload.get("job_id")
     if not job_id:
         log_warning(logger, "collector.result_failed", reason="missing_job_id")

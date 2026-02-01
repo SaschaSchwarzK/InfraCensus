@@ -3,7 +3,7 @@ import logging
 import time
 import uuid
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from opentelemetry import propagate
 from sqlalchemy import text
@@ -44,8 +44,6 @@ configure_logging()
 configure_tracing("infracensus-central")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
 app.include_router(web_router)
-app.include_router(collector_router)
-app.include_router(jobs_router)
 
 api_v1 = APIRouter(prefix="/api/v1")
 api_v1.include_router(collector_router)
@@ -176,8 +174,12 @@ async def log_requests(request: Request, call_next) -> Response:
         
         try:
             response = await call_next(request)
-        except (RuntimeError, ValueError, OSError, TypeError, AttributeError, KeyError, ImportError) as exc:
-            _handle_request_error(span, logger, request_id, method, path, start, request, exc)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            _handle_request_error(
+                span, logger, request_id, method, path, start, request, exc
+            )
             raise
         
         duration_ms = int((time.time() - start) * 1000)

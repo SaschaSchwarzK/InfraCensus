@@ -1,4 +1,4 @@
-import hashlib
+from central.core.auth import hash_token
 import importlib
 import os
 from datetime import UTC, datetime, timedelta
@@ -71,7 +71,7 @@ async def test_full_scan_flow(tmp_path: Path):
 
     Base.metadata.create_all(engine)
     token = "test-token"
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    token_hash = hash_token(token)
     now = datetime.now(UTC)
     with get_session() as session:
         tenant = Tenant(name="test-tenant")

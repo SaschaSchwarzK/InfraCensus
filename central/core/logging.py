@@ -19,6 +19,16 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 LOG_PRETTY = os.getenv("LOG_PRETTY", "false").lower() in {"1", "true", "yes"}
 LOG_SAMPLE_DEFAULT = float(os.getenv("LOG_SAMPLE_DEFAULT", "1.0"))
 LOG_SAMPLE_RATES = os.getenv("LOG_SAMPLE_RATES", "")
+_LOG_SAMPLE_RATE_MAP: dict[str, float] = {}
+if LOG_SAMPLE_RATES:
+    for pair in LOG_SAMPLE_RATES.split(","):
+        if not pair.strip():
+            continue
+        key, _, value = pair.partition("=")
+        try:
+            _LOG_SAMPLE_RATE_MAP[key.strip()] = float(value)
+        except ValueError:
+            continue
 
 _trace_id: ContextVar[str | None] = ContextVar("trace_id", default=None)
 _tenant_id: ContextVar[str | None] = ContextVar("tenant_id", default=None)
@@ -71,18 +81,9 @@ def configure_logging() -> None:
 
 
 def _sample_rate_for_event(event: str) -> float:
-    if not LOG_SAMPLE_RATES:
+    if not _LOG_SAMPLE_RATE_MAP:
         return LOG_SAMPLE_DEFAULT
-    rates: dict[str, float] = {}
-    for pair in LOG_SAMPLE_RATES.split(","):
-        if not pair.strip():
-            continue
-        key, _, value = pair.partition("=")
-        try:
-            rates[key.strip()] = float(value)
-        except ValueError:
-            continue
-    return rates.get(event, LOG_SAMPLE_DEFAULT)
+    return _LOG_SAMPLE_RATE_MAP.get(event, LOG_SAMPLE_DEFAULT)
 
 
 def log_event(

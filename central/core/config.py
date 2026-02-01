@@ -14,6 +14,34 @@ from central.core.config_source import ConfigSource
 logger = logging.getLogger(__name__)
 
 
+def _validate_session_secret(secret: str, environment: str) -> None:
+    if len(secret) < 32:
+        raise ValueError("SESSION_SECRET must be at least 32 characters")
+    weak_defaults = {
+        "dev-session-secret",
+        "test-secret",
+        "change-me",
+        "secret",
+        "password",
+    }
+    if secret.lower() in weak_defaults:
+        raise ValueError(
+            "SESSION_SECRET cannot be a default value. "
+            "Generate one with: python -c 'import secrets; "
+            "print(secrets.token_urlsafe(32))'"
+        )
+    if len(set(secret)) < 8:
+        logger.warning(
+            "SESSION_SECRET has low entropy. Consider using a random value."
+        )
+    if environment == "dev" and len(secret) < 64:
+        logger.warning(
+            "Using short SESSION_SECRET in dev. "
+            "Consider: python -c 'import secrets; "
+            "print(secrets.token_urlsafe(64))'"
+        )
+
+
 @dataclass(frozen=True)
 class Settings:
     environment: str
@@ -68,15 +96,7 @@ class Settings:
         validated = CentralConfigSchema.model_validate(config)
         environment = validated.environment.lower()
         session_secret = validated.session_secret
-        if environment != "dev":
-            if session_secret == "dev-session-secret":
-                raise ValueError(
-                    "SESSION_SECRET must be set to a non-default value in non-dev environments."
-                )
-            if len(session_secret) < 32:
-                raise ValueError(
-                    "SESSION_SECRET must be at least 32 characters in non-dev environments."
-                )
+        _validate_session_secret(session_secret, environment)
         settings = cls(
             environment=environment,
             api_host=validated.api_host,

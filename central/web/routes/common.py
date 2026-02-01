@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import secrets
 from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime
 from typing import Any
@@ -66,12 +64,6 @@ def _is_valid_timezone(value: str) -> bool:
     except ZoneInfoNotFoundError:
         return False
     return True
-
-
-def _hash_token(token: str) -> str:
-    salt = secrets.token_bytes(32)
-    key = hashlib.pbkdf2_hmac("sha256", token.encode("utf-8"), salt, 100000)
-    return salt.hex() + key.hex()
 
 
 def _parse_labels_value(value: object) -> dict[str, str] | None:

@@ -21,21 +21,36 @@ class CASettings:
 
 
 class CertificateAuthority:
+    CA_BASE_DIR = Path("/var/lib/infracensus/ca").resolve()
+
     def __init__(self, settings: CASettings) -> None:
         self._settings = settings
         # Validate and sanitize paths to prevent path traversal
-        self._key_path = self._validate_path(settings.key_path)
-        self._cert_path = self._validate_path(settings.cert_path)
+        self._key_path = self._validate_path(settings.key_path, "CA key")
+        self._cert_path = self._validate_path(settings.cert_path, "CA cert")
         self._key_path.parent.mkdir(parents=True, exist_ok=True)
         self._cert_path.parent.mkdir(parents=True, exist_ok=True)
         self._private_key, self._ca_cert = self._load_or_create_ca()
 
-    def _validate_path(self, path_str: str) -> Path:
-        """Validate and resolve path to prevent traversal attacks."""
-        path = Path(path_str).resolve()
-        # Ensure the resolved path doesn't contain traversal sequences
-        if ".." in path.parts:
-            raise ValueError(f"Path traversal detected in: {path_str}")
+    def _validate_path(self, path_str: str, name: str = "path") -> Path:
+        """Validate path is within CA base directory and avoid traversal."""
+        if not path_str:
+            raise ValueError(f"Missing {name} path")
+        if ".." in path_str or path_str.startswith(("/", "\\\\")):
+            raise ValueError(f"Path traversal detected in {name}: {path_str}")
+        path = (self.CA_BASE_DIR / path_str).resolve()
+        try:
+            path.relative_to(self.CA_BASE_DIR)
+        except ValueError as exc:
+            raise ValueError(f"Path {name} escapes CA directory: {path_str}") from exc
+        if path.is_symlink():
+            real_path = path.resolve()
+            try:
+                real_path.relative_to(self.CA_BASE_DIR)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Symlink {name} points outside CA directory: {path_str}"
+                ) from exc
         return path
 
     def issue_certificate(
