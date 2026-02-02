@@ -59,3 +59,15 @@ async def test_fetch_secret_builds_vault_path(monkeypatch):
     result = await credentials._fetch_secret(vault, 12, "ssh", credential_set)
     assert result == {"username": "u"}
     vault.read_secret.assert_awaited_once_with("12/ssh/3")
+
+
+def test_normalize_protocol_rejects_unknown():
+    assert credentials._normalize_protocol("ftp") is None
+    assert credentials._normalize_protocol("ssh") == "ssh"
+
+
+def test_parse_ip_and_subnet():
+    ip = credentials._parse_ip("10.0.0.1")
+    assert ip is not None
+    assert credentials._ip_in_subnet(ip, "10.0.0.0/24") is True
+    assert credentials._ip_in_subnet(ip, "10.0.1.0/24") is False

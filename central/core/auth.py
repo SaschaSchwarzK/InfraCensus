@@ -24,10 +24,22 @@ def parse_roles(
     roles_value: str | None, fallback: UserRole | None = None
 ) -> set[UserRole]:
     roles: set[UserRole] = set()
+    aliases = {
+        "read_only": UserRole.read_only,
+        "ro": UserRole.read_only,
+        "scan_operator": UserRole.scan_operator,
+        "read_write": UserRole.read_write,
+        "rw": UserRole.read_write,
+        "user_admin": UserRole.user_admin,
+    }
     if roles_value:
         for item in roles_value.split(","):
             item = item.strip()
             if not item:
+                continue
+            key = item.lower()
+            if key in aliases:
+                roles.add(aliases[key])
                 continue
             try:
                 roles.add(UserRole(item))

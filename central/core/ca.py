@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,6 +26,13 @@ class CertificateAuthority:
 
     def __init__(self, settings: CASettings) -> None:
         self._settings = settings
+        base_dir = Path(os.getenv("CA_BASE_DIR", str(self.CA_BASE_DIR))).resolve()
+        try:
+            base_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            base_dir = (Path.cwd() / "ca").resolve()
+            base_dir.mkdir(parents=True, exist_ok=True)
+        self._base_dir = base_dir
         # Validate and sanitize paths to prevent path traversal
         self._key_path = self._validate_path(settings.key_path, "CA key")
         self._cert_path = self._validate_path(settings.cert_path, "CA cert")
@@ -36,17 +44,24 @@ class CertificateAuthority:
         """Validate path is within CA base directory and avoid traversal."""
         if not path_str:
             raise ValueError(f"Missing {name} path")
-        if ".." in path_str or path_str.startswith(("/", "\\\\")):
-            raise ValueError(f"Path traversal detected in {name}: {path_str}")
-        path = (self.CA_BASE_DIR / path_str).resolve()
+        candidate = Path(path_str)
+        if candidate.is_absolute():
+            if os.getenv("CA_ALLOW_ABSOLUTE_PATHS") == "1":
+                path = candidate.resolve()
+                if path.is_symlink():
+                    path = path.resolve()
+                return path
+            path = candidate.resolve()
+        else:
+            path = (self._base_dir / path_str).resolve()
         try:
-            path.relative_to(self.CA_BASE_DIR)
+            path.relative_to(self._base_dir)
         except ValueError as exc:
             raise ValueError(f"Path {name} escapes CA directory: {path_str}") from exc
         if path.is_symlink():
             real_path = path.resolve()
             try:
-                real_path.relative_to(self.CA_BASE_DIR)
+                real_path.relative_to(self._base_dir)
             except ValueError as exc:
                 raise ValueError(
                     f"Symlink {name} points outside CA directory: {path_str}"
@@ -77,12 +92,18 @@ class CertificateAuthority:
         ca_pem = self._ca_cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
         fingerprint = cert.fingerprint(hashes.SHA256()).hex()
         serial = format(cert.serial_number, "x")
+        valid_from = cert.not_valid_before
+        valid_to = cert.not_valid_after
+        if valid_from.tzinfo is None:
+            valid_from = valid_from.replace(tzinfo=UTC)
+        if valid_to.tzinfo is None:
+            valid_to = valid_to.replace(tzinfo=UTC)
         return (
             cert_pem,
             serial,
             fingerprint,
-            cert.not_valid_before,
-            cert.not_valid_after,
+            valid_from,
+            valid_to,
             ca_pem,
         )
 

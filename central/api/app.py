@@ -38,9 +38,9 @@ app = FastAPI(
     title="InfraCensus Central API",
     version="0.1.0",
     description="Central API for InfraCensus (collectors, scheduling, and web UI).",
-    openapi_url="./openapi.json",
-    docs_url="./docs",
-    redoc_url="./redoc",
+    openapi_url="/openapi.json",
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 configure_logging()
 configure_tracing("infracensus-central")
@@ -120,6 +120,14 @@ def _setup_tracing(
     return None, span_cm
 
 
+def _get_session_user_id(request: Request) -> str | None:
+    session = request.scope.get("session")
+    if isinstance(session, dict):
+        user_id = session.get("user_id")
+        return str(user_id) if user_id is not None else None
+    return None
+
+
 def _handle_request_error(
     span,
     logger,
@@ -130,6 +138,7 @@ def _handle_request_error(
     request: Request,
     exc: Exception,
 ) -> None:
+    user_id = _get_session_user_id(request)
     duration_ms = int((time.time() - start) * 1000)
     span.set_attribute("http.status_code", 500)
     span.record_exception(exc)
@@ -142,7 +151,7 @@ def _handle_request_error(
         status_code=500,
         duration_ms=duration_ms,
         client_ip=request.client.host if request.client else None,
-        user_id=request.session.get("user_id") if hasattr(request, "session") else None,
+        user_id=user_id,
         error=str(exc),
     )
 
@@ -181,9 +190,7 @@ async def log_requests(request: Request, call_next) -> Response:
         trace_context = span.get_span_context()
         trace_id = f"{trace_context.trace_id:032x}" if trace_context.trace_id else None
         set_trace_id(trace_id or incoming_trace_id or request_id)
-        user_id = (
-            request.session.get("user_id") if hasattr(request, "session") else None
-        )
+        user_id = _get_session_user_id(request)
         if user_id is not None:
             set_log_context(user_id=str(user_id))
 
@@ -208,9 +215,7 @@ async def log_requests(request: Request, call_next) -> Response:
             status_code=response.status_code,
             duration_ms=duration_ms,
             client_ip=request.client.host if request.client else None,
-            user_id=request.session.get("user_id")
-            if hasattr(request, "session")
-            else None,
+            user_id=_get_session_user_id(request),
         )
 
         response.headers["x-request-id"] = request_id

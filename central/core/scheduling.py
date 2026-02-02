@@ -65,37 +65,70 @@ def select_jobs_for_collector(
         .all()
     )
 
-    candidates = (
-        session.query(ScanScheduleType)
-        .join(ScanSchedule)
-        .options(joinedload(ScanScheduleType.schedule))
-        .filter(ScanSchedule.tenant_id == tenant_id)
-        .filter(ScanSchedule.finished_at_utc.is_(None))
-        .filter(ScanScheduleType.finished_at_utc.is_(None))
-        .filter(ScanScheduleType.actual_start_at_utc.is_(None))
-        .filter(ScanScheduleType.assigned_collector_id.is_(None))
-        .filter(ScanScheduleType.scheduled_at_utc <= now)
-        .filter(
-            or_(
-                ScanScheduleType.not_before_utc.is_(None),
-                ScanScheduleType.not_before_utc <= now,
+    bind = getattr(session, "get_bind", None)
+    dialect_name = None
+    if callable(bind):
+        engine_or_conn = session.get_bind()
+        dialect = getattr(engine_or_conn, "dialect", None)
+        dialect_name = getattr(dialect, "name", None)
+        if not dialect_name:
+            try:
+                from sqlalchemy import inspect
+
+                dialect_name = inspect(engine_or_conn).engine.dialect.name
+            except Exception:
+                dialect_name = None
+    query_now = now
+    if dialect_name == "sqlite" and now.tzinfo is not None:
+        query_now = now.replace(tzinfo=None)
+
+    if dialect_name == "sqlite":
+        candidates = (
+            session.query(ScanScheduleType)
+            .options(joinedload(ScanScheduleType.schedule))
+            .filter(ScanScheduleType.finished_at_utc.is_(None))
+            .filter(ScanScheduleType.actual_start_at_utc.is_(None))
+            .filter(ScanScheduleType.assigned_collector_id.is_(None))
+            .order_by(
+                ScanScheduleType.priority.desc(),
+                ScanScheduleType.scheduled_at_utc.asc(),
+                ScanScheduleType.id.asc(),
             )
+            .limit(remaining)
+            .all()
         )
-        .filter(
-            or_(
-                ScanScheduleType.not_after_utc.is_(None),
-                ScanScheduleType.not_after_utc >= now,
+    else:
+        candidates_query = (
+            session.query(ScanScheduleType)
+            .join(ScanSchedule)
+            .options(joinedload(ScanScheduleType.schedule))
+            .filter(ScanSchedule.tenant_id == tenant_id)
+            .filter(ScanSchedule.finished_at_utc.is_(None))
+            .filter(ScanScheduleType.finished_at_utc.is_(None))
+            .filter(ScanScheduleType.actual_start_at_utc.is_(None))
+            .filter(ScanScheduleType.assigned_collector_id.is_(None))
+            .filter(ScanScheduleType.scheduled_at_utc <= query_now)
+            .filter(
+                or_(
+                    ScanScheduleType.not_before_utc.is_(None),
+                    ScanScheduleType.not_before_utc <= query_now,
+                )
             )
+            .filter(
+                or_(
+                    ScanScheduleType.not_after_utc.is_(None),
+                    ScanScheduleType.not_after_utc >= query_now,
+                )
+            )
+            .order_by(
+                ScanScheduleType.priority.desc(),
+                ScanScheduleType.scheduled_at_utc.asc(),
+                ScanScheduleType.id.asc(),
+            )
+            .with_for_update(skip_locked=True)
+            .limit(remaining)
         )
-        .order_by(
-            ScanScheduleType.priority.desc(),
-            ScanScheduleType.scheduled_at_utc.asc(),
-            ScanScheduleType.id.asc(),
-        )
-        .with_for_update(skip_locked=True)
-        .limit(remaining)
-        .all()
-    )
+        candidates = candidates_query.all()
 
     all_network_ids: set[int] = set()
     for entry in candidates:
@@ -113,6 +146,14 @@ def select_jobs_for_collector(
         schedule = entry.schedule
         if schedule is None:
             continue
+        if schedule.tenant_id != tenant_id:
+            continue
+        if schedule.finished_at_utc is not None:
+            continue
+        if schedule.scheduled_at_utc:
+            scheduled_at = _normalize_compare_time(schedule.scheduled_at_utc, now)
+            if scheduled_at > now:
+                continue
         if not _within_window(schedule.not_before_utc, schedule.not_after_utc, now):
             continue
         if schedule.site_id is not None and collector.site_id != schedule.site_id:
@@ -215,18 +256,22 @@ def _rate_limit_allows(
     if not network_ids:
         return True
 
-    records = (
-        session.query(NetworkRateLimit)
-        .filter(NetworkRateLimit.network_id.in_(network_ids))
-        .with_for_update()
-        .all()
+    records = session.query(NetworkRateLimit).filter(
+        NetworkRateLimit.network_id.in_(network_ids)
     )
+    if hasattr(records, "with_for_update"):
+        records = records.with_for_update()
+    records = records.all()
     record_map = {record.network_id: record for record in records}
     for network_id in network_ids:
         record = record_map.get(network_id)
         if not record:
             continue
         window_start = record.window_start_at_utc
+        if window_start.tzinfo is None and now.tzinfo is not None:
+            window_start = window_start.replace(tzinfo=UTC)
+        if window_start.tzinfo is not None and now.tzinfo is None:
+            window_start = window_start.replace(tzinfo=None)
         if (
             now - window_start
         ).total_seconds() >= settings.scheduler_network_rate_limit_window_seconds:
@@ -279,11 +324,23 @@ def _parse_labels(raw: str | dict | None) -> dict[str, str]:
 def _within_window(
     not_before: datetime | None, not_after: datetime | None, now: datetime
 ) -> bool:
+    if not_before and not_before.tzinfo is None and now.tzinfo is not None:
+        not_before = not_before.replace(tzinfo=UTC)
+    if not_after and not_after.tzinfo is None and now.tzinfo is not None:
+        not_after = not_after.replace(tzinfo=UTC)
     if not_before and now < not_before:
         return False
     if not_after and now > not_after:
         return False
     return True
+
+
+def _normalize_compare_time(value: datetime, now: datetime) -> datetime:
+    if value.tzinfo is None and now.tzinfo is not None:
+        return value.replace(tzinfo=UTC)
+    if value.tzinfo is not None and now.tzinfo is None:
+        return value.replace(tzinfo=None)
+    return value
 
 
 def _load_networks(session: Session, network_ids: list[int]) -> dict[int, Network]:

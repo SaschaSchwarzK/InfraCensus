@@ -37,7 +37,7 @@ def client(tmp_path: Path):
     ca_dir = tmp_path / "ca"
     ca_dir.mkdir(parents=True, exist_ok=True)
     os.environ["ENVIRONMENT"] = "dev"
-    os.environ["SESSION_SECRET"] = "test-session-secret-1234567890"
+    os.environ["SESSION_SECRET"] = "test-session-secret-0123456789abcdef"
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
     os.environ["CA_KEY_PATH"] = str(ca_dir / "ca.key")
     os.environ["CA_CERT_PATH"] = str(ca_dir / "ca.crt")
@@ -78,7 +78,7 @@ def client(tmp_path: Path):
 def test_collector_enrollment(client: TestClient):
     csr = _generate_csr()
     response = client.post(
-        "/collectors/enroll",
+        "/api/v1/collectors/enroll",
         json={
             "token": "test-token",
             "csr": csr,

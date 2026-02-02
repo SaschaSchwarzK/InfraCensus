@@ -1,12 +1,12 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from central.db.engine import SessionLocal
+import central.db.engine as engine_module
 
 
 @contextmanager
 def get_session() -> Iterator:
-    session = SessionLocal()
+    session = engine_module.SessionLocal()
     try:
         yield session
         session.commit()

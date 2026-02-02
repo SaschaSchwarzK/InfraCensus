@@ -1,4 +1,3 @@
-import hashlib
 import importlib
 import os
 from datetime import UTC, datetime, timedelta
@@ -10,6 +9,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from fastapi.testclient import TestClient
+
+from central.core.auth import hash_token
 
 
 def _generate_csr() -> str:
@@ -36,7 +37,7 @@ def client(tmp_path: Path):
     ca_dir = tmp_path / "ca"
     ca_dir.mkdir(parents=True, exist_ok=True)
     os.environ["ENVIRONMENT"] = "dev"
-    os.environ["SESSION_SECRET"] = "test-session-secret-1234567890"
+    os.environ["SESSION_SECRET"] = "test-session-secret-0123456789abcdef"
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
     os.environ["CA_KEY_PATH"] = str(ca_dir / "ca.key")
     os.environ["CA_CERT_PATH"] = str(ca_dir / "ca.crt")
@@ -59,7 +60,7 @@ def client(tmp_path: Path):
 
     Base.metadata.create_all(engine)
     token = "test-token"
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    token_hash = hash_token(token)
     now = datetime.now(UTC)
     with get_session() as session:
         tenant = Tenant(name="test-tenant")
@@ -78,7 +79,7 @@ def client(tmp_path: Path):
 def test_collector_rate_limit_enforcement(client: TestClient):
     csr = _generate_csr()
     first = client.post(
-        "/collectors/enroll",
+        "/api/v1/collectors/enroll",
         json={
             "token": "test-token",
             "csr": csr,
@@ -87,7 +88,7 @@ def test_collector_rate_limit_enforcement(client: TestClient):
     )
     assert first.status_code in {200, 201}
     second = client.post(
-        "/collectors/enroll",
+        "/api/v1/collectors/enroll",
         json={
             "token": "test-token",
             "csr": csr,

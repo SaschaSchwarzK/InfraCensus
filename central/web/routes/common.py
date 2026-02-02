@@ -7,7 +7,7 @@ from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -16,7 +16,7 @@ from central.core.parsing import format_utc, parse_labels, parse_optional_str_li
 templates = Jinja2Templates(directory="central/web/templates")
 
 _ALLOWED_CREDENTIAL_PROTOCOLS = {"snmp", "ssh", "http"}
-type WebResponse = HTMLResponse | JSONResponse | RedirectResponse
+WebResponse = Response  # noqa: UP040
 
 
 def _safe_query(fetch: Callable[[], Iterable[Any]]) -> tuple[list[Any], str | None]:

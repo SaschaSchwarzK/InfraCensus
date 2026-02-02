@@ -35,15 +35,22 @@ def authenticate(email: str, password: str) -> User | None:
 
 
 def login_user(request: Request, user: User) -> None:
-    request.session["user_id"] = user.id
+    session = request.scope.get("session")
+    if isinstance(session, dict):
+        session["user_id"] = user.id
 
 
 def logout_user(request: Request) -> None:
-    request.session.clear()
+    session = request.scope.get("session")
+    if isinstance(session, dict):
+        session.clear()
 
 
 def get_current_user(request: Request) -> User | None:
-    user_id = request.session.get("user_id")
+    session = request.scope.get("session")
+    if not isinstance(session, dict):
+        return None
+    user_id = session.get("user_id")
     if not user_id:
         return None
     with get_session() as session:

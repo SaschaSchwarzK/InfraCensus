@@ -22,7 +22,8 @@ def _create_csr(common_name: str) -> str:
     return csr.public_bytes(serialization.Encoding.PEM).decode("utf-8")
 
 
-def test_ca_creates_and_persists(tmp_path):
+def test_ca_creates_and_persists(monkeypatch, tmp_path):
+    monkeypatch.setenv("CA_BASE_DIR", str(tmp_path))
     key_path = tmp_path / "ca.key"
     cert_path = tmp_path / "ca.crt"
     settings = CASettings(
@@ -43,7 +44,8 @@ def test_ca_creates_and_persists(tmp_path):
     assert cert1.serial_number == cert2.serial_number
 
 
-def test_issue_certificate_valid(tmp_path):
+def test_issue_certificate_valid(monkeypatch, tmp_path):
+    monkeypatch.setenv("CA_BASE_DIR", str(tmp_path))
     settings = CASettings(
         key_path=str(tmp_path / "ca.key"),
         cert_path=str(tmp_path / "ca.crt"),
@@ -72,7 +74,8 @@ def test_issue_certificate_valid(tmp_path):
     assert valid_to.tzinfo == UTC
 
 
-def test_issue_certificate_invalid_csr(tmp_path):
+def test_issue_certificate_invalid_csr(monkeypatch, tmp_path):
+    monkeypatch.setenv("CA_BASE_DIR", str(tmp_path))
     settings = CASettings(
         key_path=str(tmp_path / "ca.key"),
         cert_path=str(tmp_path / "ca.crt"),

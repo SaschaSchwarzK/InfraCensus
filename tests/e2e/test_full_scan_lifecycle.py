@@ -43,7 +43,7 @@ async def test_full_scan_flow(tmp_path: Path):
     ca_dir = tmp_path / "ca"
     ca_dir.mkdir(parents=True, exist_ok=True)
     os.environ["ENVIRONMENT"] = "dev"
-    os.environ["SESSION_SECRET"] = "test-session-secret-1234567890"
+    os.environ["SESSION_SECRET"] = "test-session-secret-0123456789abcdef"
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
     os.environ["CA_KEY_PATH"] = str(ca_dir / "ca.key")
     os.environ["CA_CERT_PATH"] = str(ca_dir / "ca.crt")
@@ -110,7 +110,7 @@ async def test_full_scan_flow(tmp_path: Path):
     async with httpx.AsyncClient(app=app_module.app, base_url="http://test") as client:
         csr = _generate_csr()
         enroll_response = await client.post(
-            "/collectors/enroll",
+            "/api/v1/collectors/enroll",
             json={
                 "token": token,
                 "csr": csr,
@@ -129,7 +129,7 @@ async def test_full_scan_flow(tmp_path: Path):
             cert_fingerprint = collector.cert_fingerprint
 
         poll_response = await client.get(
-            "/collectors/jobs/poll",
+            "/api/v1/collectors/jobs/poll",
             headers={
                 **_timestamp_header(),
                 "x-client-cert-serial": cert_serial or "",
@@ -142,7 +142,7 @@ async def test_full_scan_flow(tmp_path: Path):
         job_id = jobs[0]["job_id"]
 
         ack_response = await client.post(
-            "/collectors/jobs/ack",
+            "/api/v1/collectors/jobs/ack",
             headers={
                 **_timestamp_header(),
                 "x-client-cert-serial": cert_serial or "",
@@ -158,7 +158,7 @@ async def test_full_scan_flow(tmp_path: Path):
         assert ack_response.status_code == 200
 
         result_response = await client.post(
-            "/collectors/jobs/result",
+            "/api/v1/collectors/jobs/result",
             headers={
                 **_timestamp_header(),
                 "x-client-cert-serial": cert_serial or "",

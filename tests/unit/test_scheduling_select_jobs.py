@@ -27,8 +27,11 @@ def session():
     SessionLocal = sessionmaker(
         bind=engine, autoflush=False, expire_on_commit=False, future=True
     )
-    with SessionLocal() as session:
-        yield session
+    try:
+        with SessionLocal() as session:
+            yield session
+    finally:
+        engine.dispose()
 
 
 def _seed_basic(session):
@@ -37,6 +40,7 @@ def _seed_basic(session):
     session.flush()
     site = Site(tenant_id=tenant.id, name="site-1", timezone="UTC")
     session.add(site)
+    session.flush()
     network = Network(
         tenant_id=tenant.id,
         site_id=site.id,

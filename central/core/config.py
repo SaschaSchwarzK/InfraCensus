@@ -19,6 +19,7 @@ def _validate_session_secret(secret: str, environment: str) -> None:
         raise ValueError("SESSION_SECRET must be at least 32 characters")
     weak_defaults = {
         "dev-session-secret",
+        "dev-session-secret-please-change-0123456789abcdef",
         "test-secret",
         "change-me",
         "secret",
@@ -38,6 +39,18 @@ def _validate_session_secret(secret: str, environment: str) -> None:
             "Consider: python -c 'import secrets; "
             "print(secrets.token_urlsafe(64))'"
         )
+
+
+def _env_overrides() -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
+    for field in CentralConfigSchema.model_fields:
+        env_name = field.upper()
+        value = os.getenv(env_name)
+        if value is None:
+            value = os.getenv(f"CENTRAL_{env_name}")
+        if value is not None:
+            overrides[field] = value
+    return overrides
 
 
 @dataclass(frozen=True)
@@ -91,7 +104,8 @@ class Settings:
 
     @classmethod
     def from_sources(cls, config: dict[str, Any]) -> Settings:
-        validated = CentralConfigSchema.model_validate(config)
+        merged = {**config, **_env_overrides()}
+        validated = CentralConfigSchema.model_validate(merged)
         environment = validated.environment.lower()
         session_secret = validated.session_secret
         _validate_session_secret(session_secret, environment)
@@ -184,7 +198,7 @@ class SettingsState:
     @property
     def settings(self) -> Settings:
         if self._settings is None:
-            self.reload_sync(force=True)
+            self._reload_blocking(force=True)
         return self._settings  # type: ignore[return-value]
 
     async def reload(self, force: bool = False) -> None:
@@ -212,6 +226,30 @@ class SettingsState:
             asyncio.run(self.reload(force=force))
             return
         loop.create_task(self.reload(force=force))
+
+    def _reload_blocking(self, force: bool = False) -> None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.reload(force=force))
+            return
+        done = threading.Event()
+        error: Exception | None = None
+
+        def _runner() -> None:
+            nonlocal error
+            try:
+                asyncio.run(self.reload(force=force))
+            except Exception as exc:  # pragma: no cover - unexpected reload failure
+                error = exc
+            finally:
+                done.set()
+
+        thread = threading.Thread(target=_runner, daemon=True)
+        thread.start()
+        done.wait()
+        if error:
+            raise error
 
     def add_listener(self, listener: Callable[[Settings], None]) -> None:
         self._listeners.append(listener)

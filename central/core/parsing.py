@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 
@@ -63,6 +64,14 @@ def parse_str_list(value: object) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                loaded = json.loads(text)
+            except (TypeError, ValueError):
+                loaded = None
+            if isinstance(loaded, list):
+                return [str(item).strip() for item in loaded if str(item).strip()]
         return [item.strip() for item in value.split(",") if item.strip()]
     return []
 
