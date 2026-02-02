@@ -35,14 +35,15 @@ class LocalStorage:
         if not name or not isinstance(name, str):
             raise ValueError("Invalid filename")
 
-        # Remove any path separators and traversal sequences
-        clean_name = name.replace("..", "").replace("/", "").replace("\\", "")
-
-        # Ensure the name is not empty after cleaning
-        if not clean_name or clean_name != name:
-            raise ValueError(f"Invalid filename contains path traversal: {name}")
-
-        return clean_name
+        # Ensure the resolved path stays within the storage root
+        candidate = (self.root / name).resolve()
+        try:
+            candidate.relative_to(self.root)
+        except ValueError as exc:
+            raise ValueError(f"Invalid filename contains path traversal: {name}") from exc
+        if candidate.is_dir():
+            raise ValueError(f"Invalid filename is a directory: {name}")
+        return name
 
     def load_json(self, name: str) -> dict[str, Any] | None:
         clean_name = self._validate_name(name)

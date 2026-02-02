@@ -4,13 +4,16 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
+_GIT_REF_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 
 
 @dataclass(frozen=True)
@@ -72,8 +75,11 @@ class ConfigSource:
                 f"CONFIG_GIT_DIR exists but is not a git repo: {repo_dir}"
             )
         repo_dir.parent.mkdir(parents=True, exist_ok=True)
+        if not self.git_url:
+            raise RuntimeError("CONFIG_GIT_URL is required when using git config")
+        git_url = _validate_git_url(self.git_url)
         await self._run_git(
-            ["clone", "--depth", "1", str(self.git_url or ""), str(repo_dir)]
+            ["clone", "--depth", "1", git_url, str(repo_dir)]
         )
 
     async def _update_repo(self) -> None:
@@ -84,13 +90,14 @@ class ConfigSource:
             return
         if not self.git_ref:
             return
+        git_ref = _validate_git_ref(self.git_ref)
         await self._run_git(
-            ["fetch", "--depth", "1", "origin", self.git_ref], cwd=repo_dir
+            ["fetch", "--depth", "1", "origin", git_ref], cwd=repo_dir
         )
-        await self._run_git(["reset", "--hard", f"origin/{self.git_ref}"], cwd=repo_dir)
+        await self._run_git(["reset", "--hard", f"origin/{git_ref}"], cwd=repo_dir)
 
     async def _run_git(self, args: list[str], cwd: Path | None = None) -> None:
-        if not args or not args[0]:
+        if not _validate_git_args(args):
             raise ValueError("Invalid git command")
         
         # Validate git arguments to prevent command injection
@@ -125,3 +132,37 @@ class ConfigSource:
 
 def _env(name: str, default: str | None = None) -> str | None:
     return os.getenv(f"COLLECTOR_{name}") or os.getenv(name) or default
+
+
+def _validate_git_url(value: str) -> str:
+    candidate = value.strip()
+    if not candidate or candidate.startswith("-") or any(ch.isspace() for ch in candidate):
+        raise ValueError("Invalid CONFIG_GIT_URL")
+    parsed = urlparse(candidate)
+    if parsed.scheme in {"http", "https", "ssh"}:
+        return candidate
+    if ":" in candidate and "/" in candidate and not candidate.startswith("/"):
+        return candidate
+    raise ValueError("Unsupported CONFIG_GIT_URL scheme")
+
+
+def _validate_git_ref(value: str) -> str:
+    candidate = value.strip()
+    if not candidate or candidate.startswith("-"):
+        raise ValueError("Invalid CONFIG_GIT_REF")
+    if not _GIT_REF_RE.fullmatch(candidate):
+        raise ValueError("Invalid CONFIG_GIT_REF")
+    return candidate
+
+
+def _validate_git_args(args: list[str]) -> bool:
+    if not args:
+        return False
+    cmd = args[0]
+    if cmd == "clone":
+        return args[:3] == ["clone", "--depth", "1"] and len(args) == 5
+    if cmd == "fetch":
+        return args[:3] == ["fetch", "--depth", "1"] and len(args) == 5
+    if cmd == "reset":
+        return args[:2] == ["reset", "--hard"] and len(args) == 3
+    return False

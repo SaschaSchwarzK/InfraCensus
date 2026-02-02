@@ -62,6 +62,12 @@ app.state.ca = CertificateAuthority(
 )
 
 
+def _sanitize_rate_limit(value: object) -> int:
+    if not isinstance(value, (int, float)) or value < 0 or value > 10000:
+        return 100
+    return int(value)
+
+
 def _apply_settings(new_settings: Settings) -> None:
     for middleware in app.user_middleware:
         if middleware.cls is SessionMiddleware:
@@ -72,18 +78,10 @@ def _apply_settings(new_settings: Settings) -> None:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        # Validate and sanitize rate limit value before using it
-        rate_limit = new_settings.collector_rate_limit_per_hour
-        if not isinstance(rate_limit, (int, float)) or rate_limit < 0 or rate_limit > 10000:
-            rate_limit = 100  # Default safe value
-        rate_limit = int(rate_limit)  # Ensure it's an integer
+        rate_limit = _sanitize_rate_limit(new_settings.collector_rate_limit_per_hour)
         asyncio.run(app.state.rate_limiter.update_limit(rate_limit))
     else:
-        # Validate and sanitize rate limit value before using it
-        rate_limit = new_settings.collector_rate_limit_per_hour
-        if not isinstance(rate_limit, (int, float)) or rate_limit < 0 or rate_limit > 10000:
-            rate_limit = 100  # Default safe value
-        rate_limit = int(rate_limit)  # Ensure it's an integer
+        rate_limit = _sanitize_rate_limit(new_settings.collector_rate_limit_per_hour)
         loop.create_task(app.state.rate_limiter.update_limit(rate_limit))
     app.state.ca = CertificateAuthority(
         CASettings(

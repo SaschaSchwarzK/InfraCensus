@@ -6,6 +6,8 @@ Create Date: 2024-01-13 00:00:00.000000
 
 """
 
+import uuid
+
 import sqlalchemy as sa
 
 from alembic import op
@@ -43,11 +45,15 @@ def _add_collector_columns(bind, columns):
             batch.add_column(sa.Column("risk_flags", sa.Text(), nullable=True))
 
 
-def _populate_default_values():
+def _populate_default_values(bind, columns):
     """Populate default values for new columns."""
-    op.execute(
-        "UPDATE collectors SET uuid = lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6))) WHERE uuid IS NULL"
-    )
+    if "uuid" in columns:
+        rows = bind.execute(sa.text("SELECT id FROM collectors WHERE uuid IS NULL")).fetchall()
+        for (collector_id,) in rows:
+            bind.execute(
+                sa.text("UPDATE collectors SET uuid = :uuid WHERE id = :id"),
+                {"uuid": str(uuid.uuid4()), "id": collector_id},
+            )
     op.execute("UPDATE collectors SET status = 'active' WHERE status IS NULL")
 
 
@@ -98,7 +104,7 @@ def upgrade() -> None:
     columns = [row[1] for row in bind.execute(sa.text("PRAGMA table_info(collectors)"))]
     
     _add_collector_columns(bind, columns)
-    _populate_default_values()
+    _populate_default_values(bind, columns)
     
     indexes = [row[1] for row in bind.execute(sa.text("PRAGMA index_list(collectors)"))]
     _add_collector_constraints(bind, columns, indexes)
