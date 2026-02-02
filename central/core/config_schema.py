@@ -19,7 +19,7 @@ class CentralConfigSchema(BaseModel):
     db_pool_timeout: int = 30
     db_pool_recycle: int = 1800
     db_pool_pre_ping: bool = True
-    session_secret: str = "dev-session-secret"
+    session_secret: str = "dev-session-secret-please-change-0123456789ABCDEF"
     auth_mode: str = "local"
     oidc_issuer_url: str | None = None
     oidc_client_id: str | None = None
