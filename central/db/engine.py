@@ -23,7 +23,18 @@ logger = logging.getLogger(__name__)
 
 def _build_engine(current: Settings | SettingsProxy) -> tuple[Engine, sessionmaker]:
     engine_kwargs: dict[str, Any] = {"future": True}
-    if current.database_url.startswith("sqlite"):
+    database_url = current.database_url
+    if database_url.startswith("postgresql+psycopg2://"):
+        database_url = database_url.replace(
+            "postgresql+psycopg2://", "postgresql+psycopg://", 1
+        )
+    elif database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
+    elif database_url.startswith("postgresql://"):
+        database_url = database_url.replace(
+            "postgresql://", "postgresql+psycopg://", 1
+        )
+    if database_url.startswith("sqlite"):
         engine_kwargs["connect_args"] = {"check_same_thread": False}
         engine_kwargs["poolclass"] = NullPool
     else:
@@ -32,7 +43,7 @@ def _build_engine(current: Settings | SettingsProxy) -> tuple[Engine, sessionmak
         engine_kwargs["pool_timeout"] = current.db_pool_timeout
         engine_kwargs["pool_recycle"] = current.db_pool_recycle
         engine_kwargs["pool_pre_ping"] = current.db_pool_pre_ping
-    new_engine = create_engine(current.database_url, **engine_kwargs)
+    new_engine = create_engine(database_url, **engine_kwargs)
     new_session = sessionmaker(
         bind=new_engine,
         autoflush=False,
