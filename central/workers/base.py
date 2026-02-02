@@ -225,4 +225,4 @@ class DeduplicatedTask(ResilientTask):
         data = json.dumps(
             {"args": args or [], "kwargs": kwargs or {}}, sort_keys=True, default=str
         )
-        return hashlib.md5(data.encode("utf-8")).hexdigest()
+        return hashlib.sha256(data.encode("utf-8")).hexdigest()

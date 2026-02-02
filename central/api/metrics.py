@@ -161,7 +161,7 @@ def _build_collector_health() -> list[str]:
         timestamp = _to_utc(last_seen).timestamp() if last_seen else 0.0
         status_value = 1 if collector.status == "active" else 0
         healthy = _is_collector_healthy(collector, now)
-        
+
         label = _label(
             tenant_id=str(collector.tenant_id),
             collector_id=str(collector.uuid),

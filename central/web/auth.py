@@ -121,7 +121,7 @@ def allow_collector_token(request: Request) -> bool:
     if not settings.collector_tokens:
         return False
     header = request.headers.get("authorization") or ""
-    token = ""
+    token = ""  # nosec
     if header.lower().startswith("bearer "):
         token = header.split(" ", 1)[1].strip()
     if not token:

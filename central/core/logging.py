@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import random
+import secrets
 import time
 import traceback
 from collections.abc import Callable
@@ -94,13 +94,17 @@ def log_event(
     **fields: Any,
 ) -> None:
     rate = _sample_rate_for_event(event)
-    if rate < 1.0 and random.random() > rate:
-        return
-    
+    if rate < 1.0:
+        threshold = int(rate * 1_000_000)
+        if threshold <= 0:
+            return
+        if secrets.randbelow(1_000_000) >= threshold:
+            return
+
     # Cache timestamp and context for performance
     timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     context = get_log_context()
-    
+
     payload: dict[str, Any] = {
         "ts": timestamp,
         "level": logging.getLevelName(level).lower(),

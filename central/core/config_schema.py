@@ -9,7 +9,7 @@ class CentralConfigSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     environment: str = "dev"
-    api_host: str = "0.0.0.0"
+    api_host: str = "127.0.0.1"
     api_port: int = 8000
     database_url: str = (
         "postgresql+psycopg://infracensus:infracensus@localhost:5432/infracensus"

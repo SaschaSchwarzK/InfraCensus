@@ -31,9 +31,7 @@ def _validate_session_secret(secret: str, environment: str) -> None:
             "print(secrets.token_urlsafe(32))'"
         )
     if len(set(secret)) < 8:
-        logger.warning(
-            "SESSION_SECRET has low entropy. Consider using a random value."
-        )
+        logger.warning("SESSION_SECRET has low entropy. Consider using a random value.")
     if environment == "dev" and len(secret) < 64:
         logger.warning(
             "Using short SESSION_SECRET in dev. "

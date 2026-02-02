@@ -55,7 +55,7 @@ async def resolve_credentials(
                     if secret:
                         secrets.append(secret)
                 resolved[target] = secrets
-    except (RuntimeError, ValueError, OSError, TypeError) as exc:
+    except (RuntimeError, ValueError, OSError, TypeError):
         # Handle vault connection or configuration errors
         # Return empty credentials for all targets as fallback
         return {target: [] for target in targets}
@@ -87,10 +87,10 @@ async def _fetch_secret(
     try:
         path = f"{tenant_id}/{protocol}/{credential_set.vault_index}"
         return await vault.read_secret(path)
-    except (ValueError, TypeError, AttributeError) as exc:
+    except (ValueError, TypeError, AttributeError):
         # Log the error but don't expose sensitive vault details
         return None
-    except (ValueError, TypeError, AttributeError, KeyError, ImportError) as exc:
+    except (ValueError, TypeError, AttributeError, KeyError, ImportError):
         # Log the error but don't expose sensitive vault details
         return None
 

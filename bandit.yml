@@ -1,0 +1,9 @@
+---
+# Bandit configuration (YAML)
+# Exclude third-party and non-runtime code from scans
+# Bandit expects `exclude` with glob patterns
+exclude_dirs: ["tests", "scripts", "venv", ".venv", "env", "site-packages", "dist-packages"]
+
+# Optional global skips (keep minimal; prefer inline `# nosec` with justification)
+skips:
+  - B404 # Consider possible security implications associated with the subprocess module

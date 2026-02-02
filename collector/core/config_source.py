@@ -30,7 +30,7 @@ class ConfigSource:
         git_url = _env("CONFIG_GIT_URL")
         git_ref = _env("CONFIG_GIT_REF", "main")
         git_path = _env("CONFIG_GIT_PATH", "config/collector.yaml")
-        git_dir = _env("CONFIG_GIT_DIR", "/tmp/infracensus-config")
+        git_dir = _env("CONFIG_GIT_DIR", "/var/lib/infracensus/config")
         return cls(
             config_file=config_file,
             git_url=git_url,
@@ -78,9 +78,7 @@ class ConfigSource:
         if not self.git_url:
             raise RuntimeError("CONFIG_GIT_URL is required when using git config")
         git_url = _validate_git_url(self.git_url)
-        await self._run_git(
-            ["clone", "--depth", "1", git_url, str(repo_dir)]
-        )
+        await self._run_git(["clone", "--depth", "1", git_url, str(repo_dir)])
 
     async def _update_repo(self) -> None:
         if not self.git_dir:
@@ -91,15 +89,13 @@ class ConfigSource:
         if not self.git_ref:
             return
         git_ref = _validate_git_ref(self.git_ref)
-        await self._run_git(
-            ["fetch", "--depth", "1", "origin", git_ref], cwd=repo_dir
-        )
+        await self._run_git(["fetch", "--depth", "1", "origin", git_ref], cwd=repo_dir)
         await self._run_git(["reset", "--hard", f"origin/{git_ref}"], cwd=repo_dir)
 
     async def _run_git(self, args: list[str], cwd: Path | None = None) -> None:
         if not _validate_git_args(args):
             raise ValueError("Invalid git command")
-        
+
         # Validate git arguments to prevent command injection
         safe_args = []
         for arg in args:
@@ -109,7 +105,7 @@ class ConfigSource:
             if any(char in arg for char in [";", "&", "|", "`", "$", "\n", "\r"]):
                 raise ValueError(f"Unsafe git argument: {arg}")
             safe_args.append(arg)
-        
+
         process = await asyncio.create_subprocess_exec(
             "git",
             *safe_args,
@@ -136,7 +132,11 @@ def _env(name: str, default: str | None = None) -> str | None:
 
 def _validate_git_url(value: str) -> str:
     candidate = value.strip()
-    if not candidate or candidate.startswith("-") or any(ch.isspace() for ch in candidate):
+    if (
+        not candidate
+        or candidate.startswith("-")
+        or any(ch.isspace() for ch in candidate)
+    ):
         raise ValueError("Invalid CONFIG_GIT_URL")
     parsed = urlparse(candidate)
     if parsed.scheme in {"http", "https", "ssh"}:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-import random
+import secrets
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -35,6 +35,7 @@ def log_audit(
     except (ValueError, TypeError) as exc:
         # Handle JSON serialization errors or database constraint violations
         import sys
+
         print(f"Failed to log audit event: {exc}", file=sys.stderr)
 
 
@@ -62,7 +63,10 @@ def log_security_event(
         except (ValueError, TypeError, RuntimeError) as exc:
             # Handle database connection or session errors
             import sys
-            print(f"Failed to create session for security event: {exc}", file=sys.stderr)
+
+            print(
+                f"Failed to create session for security event: {exc}", file=sys.stderr
+            )
         return
     try:
         session.add(
@@ -91,4 +95,7 @@ def should_sample_security_event(default_rate: float = 0.1) -> bool:
         return False
     if rate >= 1:
         return True
-    return random.random() < rate
+    threshold = int(rate * 1_000_000)
+    if threshold <= 0:
+        return False
+    return secrets.randbelow(1_000_000) < threshold

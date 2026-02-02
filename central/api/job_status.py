@@ -36,15 +36,17 @@ class JobStatusHub:
         async with self._lock:
             self._last_status[job_id] = payload
             sockets = list(self._connections.get(job_id, set()))
-        
+
         async def _send_to_socket(socket: WebSocket) -> None:
             try:
                 await socket.send_json(payload)
             except (WebSocketDisconnect, ConnectionError, RuntimeError):
                 await self.disconnect(job_id, socket)
-        
+
         if sockets:
-            await asyncio.gather(*[_send_to_socket(socket) for socket in sockets], return_exceptions=True)
+            await asyncio.gather(
+                *[_send_to_socket(socket) for socket in sockets], return_exceptions=True
+            )
 
 
 job_status_hub = JobStatusHub()

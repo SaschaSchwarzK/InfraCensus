@@ -54,8 +54,10 @@ async def _parse_limited_json(
 ) -> dict[str, Any]:
     try:
         body = await asyncio.wait_for(request.body(), timeout=30.0)
-    except asyncio.TimeoutError as exc:
-        raise HTTPException(status_code=408, detail="Request body read timeout") from exc
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=408, detail="Request body read timeout"
+        ) from exc
     except ClientDisconnect as exc:
         raise HTTPException(status_code=499, detail="Client disconnected") from exc
     if len(body) > max_size_bytes:
@@ -216,6 +218,7 @@ async def enroll(request: Request) -> JSONResponse:
         return JSONResponse({"error": "rate_limited"}, status_code=429)
 
     ca = _get_ca(request)
+
     def _enroll_db() -> tuple[str, str, str, int, int | None]:
         now = datetime.now(UTC)
         with get_session() as session:
@@ -637,9 +640,7 @@ async def submit_result(request: Request) -> JSONResponse:
             limit=MAX_RESULTS_PER_JOB,
         )
         return JSONResponse(
-            {
-                "error": f"Too many results: {len(results)} (max: {MAX_RESULTS_PER_JOB})"
-            },
+            {"error": f"Too many results: {len(results)} (max: {MAX_RESULTS_PER_JOB})"},
             status_code=400,
         )
     job_id = payload.get("job_id")

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import re
+import shutil
 import subprocess
 import time
 from typing import Any
@@ -39,9 +42,18 @@ class NmapScanner(BaseScanner):
                     )
                 )
             else:
-                # Type checker now knows result is ScanResult
-                assert isinstance(result, ScanResult)
-                final_results.append(result)
+                if isinstance(result, ScanResult):
+                    final_results.append(result)
+                else:
+                    final_results.append(
+                        ScanResult(
+                            ip=targets[i],
+                            success=False,
+                            duration_ms=0,
+                            data={"status": "error", "scanner": self.name},
+                            error="invalid_scan_result",
+                        )
+                    )
 
         return final_results
 
@@ -60,11 +72,21 @@ class NmapScanner(BaseScanner):
 async def _run_nmap(target: str, timeout: int) -> tuple[bool, str]:
     if not target or any(ch in target for ch in [";", "&", "|", "`", "$", "\n"]):
         return False, "invalid_target"
+    if target.startswith("-"):
+        return False, "invalid_target"
+    try:
+        ipaddress.ip_address(target)
+    except ValueError:
+        if not re.fullmatch(r"[A-Za-z0-9.-]+", target):
+            return False, "invalid_target"
 
     def _run() -> tuple[bool, str]:
+        nmap_path = shutil.which("nmap")
+        if not nmap_path:
+            return False, "nmap_not_found"
         try:
             completed = subprocess.run(
-                ["nmap", "-sn", "-oX", "-", target],
+                [nmap_path, "-sn", "-oX", "-", target],  # nosec B603
                 capture_output=True,
                 text=True,
                 timeout=timeout,

@@ -57,7 +57,14 @@ def _apply_settings(new_settings: Settings) -> None:
         old_engine.dispose()
     except (SQLAlchemyError, OSError, AttributeError) as exc:
         logger.warning("db.engine_dispose_failed", extra={"error": str(exc)})
-    except (RuntimeError, ValueError, OSError, TypeError, AttributeError, KeyError) as exc:
+    except (
+        RuntimeError,
+        ValueError,
+        OSError,
+        TypeError,
+        AttributeError,
+        KeyError,
+    ) as exc:
         logger.error("db.engine_dispose_unexpected_error", extra={"error": str(exc)})
 
 

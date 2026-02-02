@@ -352,7 +352,8 @@ async def admin_tenant_delete(
             .filter(CollectorAffinity.tenant_id == tenant_id)
             .count(),
             "collector_certificates": session.query(CollectorCertificate)
-            .filter(CollectorCertificate.tenant_id == tenant_id)
+            .join(Collector, Collector.id == CollectorCertificate.collector_id)
+            .filter(Collector.tenant_id == tenant_id)
             .count(),
             "collector_enrollment_tokens": session.query(CollectorEnrollmentToken)
             .filter(CollectorEnrollmentToken.tenant_id == tenant_id)
@@ -368,13 +369,15 @@ async def admin_tenant_delete(
             .filter(ScanSchedule.tenant_id == tenant_id)
             .count(),
             "scan_schedule_types": session.query(ScanScheduleType)
-            .filter(ScanScheduleType.tenant_id == tenant_id)
+            .join(ScanSchedule, ScanSchedule.id == ScanScheduleType.schedule_id)
+            .filter(ScanSchedule.tenant_id == tenant_id)
             .count(),
             "scan_runs": session.query(ScanRun)
             .filter(ScanRun.tenant_id == tenant_id)
             .count(),
             "observations": session.query(Observation)
-            .filter(Observation.tenant_id == tenant_id)
+            .join(ScanRun, ScanRun.id == Observation.scan_run_id)
+            .filter(ScanRun.tenant_id == tenant_id)
             .count(),
             "inventory_devices": session.query(InventoryDevice)
             .filter(InventoryDevice.tenant_id == tenant_id)

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import re
+import shutil
 import subprocess
 import time
 from typing import Any
@@ -34,13 +37,25 @@ class PingScanner(BaseScanner):
 
 async def _ping_target(target: str, timeout: int) -> bool:
     # Validate target to prevent command injection
-    if not target or any(char in target for char in [";", "&", "|", "`", "$", "\n", "\r"]):
+    if not target or any(
+        char in target for char in [";", "&", "|", "`", "$", "\n", "\r"]
+    ):
         return False
-    
+    if target.startswith("-"):
+        return False
+    try:
+        ipaddress.ip_address(target)
+    except ValueError:
+        if not re.fullmatch(r"[A-Za-z0-9.-]+", target):
+            return False
+
     def _run() -> bool:
+        ping_path = shutil.which("ping")
+        if not ping_path:
+            return False
         try:
             completed = subprocess.run(
-                ["ping", "-c", "1", "-W", str(timeout), target],
+                [ping_path, "-c", "1", "-W", str(timeout), target],  # nosec B603
                 capture_output=True,
                 text=True,
                 timeout=timeout + 2,  # Add buffer to subprocess timeout

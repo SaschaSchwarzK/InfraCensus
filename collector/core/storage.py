@@ -40,7 +40,9 @@ class LocalStorage:
         try:
             candidate.relative_to(self.root)
         except ValueError as exc:
-            raise ValueError(f"Invalid filename contains path traversal: {name}") from exc
+            raise ValueError(
+                f"Invalid filename contains path traversal: {name}"
+            ) from exc
         if candidate.is_dir():
             raise ValueError(f"Invalid filename is a directory: {name}")
         return name

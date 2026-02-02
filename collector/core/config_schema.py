@@ -25,7 +25,7 @@ class CollectorConfigSchema(BaseModel):
     cert_renewal_days: int = 7
     max_concurrent_jobs: int = 5
     max_job_queue: int = 100
-    health_host: str = "0.0.0.0"
+    health_host: str = "127.0.0.1"
     health_port: int = 8080
     api_max_retries: int = 3
     api_backoff_seconds: float = 0.5

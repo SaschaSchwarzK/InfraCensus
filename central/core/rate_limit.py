@@ -52,9 +52,7 @@ class CollectorRateLimiter:
     def _cleanup_stale_entries(self, now: float) -> None:
         cutoff = now - 3600
         stale_keys = [
-            key
-            for key, state in self._states.items()
-            if state.window_start < cutoff
+            key for key, state in self._states.items() if state.window_start < cutoff
         ]
         for key in stale_keys:
             del self._states[key]

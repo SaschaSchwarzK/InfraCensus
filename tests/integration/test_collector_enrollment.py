@@ -1,4 +1,3 @@
-from central.core.auth import hash_token
 import importlib
 import os
 from datetime import UTC, datetime, timedelta
@@ -10,6 +9,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from fastapi.testclient import TestClient
+
+from central.core.auth import hash_token
 
 
 def _generate_csr() -> str:

@@ -128,7 +128,7 @@ class CollectorConfig:
                 "MAX_CONCURRENT_JOBS", config, "max_concurrent_jobs", 5
             ),
             max_job_queue=_int_value("MAX_JOB_QUEUE", config, "max_job_queue", 100),
-            health_host=_value("HEALTH_HOST", config, "health_host", "0.0.0.0"),
+            health_host=_value("HEALTH_HOST", config, "health_host", "127.0.0.1"),
             health_port=_int_value("HEALTH_PORT", config, "health_port", 8080),
             api_max_retries=_int_value("API_MAX_RETRIES", config, "api_max_retries", 3),
             api_backoff_seconds=float(

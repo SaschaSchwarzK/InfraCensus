@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import subprocess
 import time
 from typing import Any
@@ -34,13 +35,18 @@ class ArpScanner(BaseScanner):
 
 async def _lookup_arp(target: str, timeout: int) -> tuple[bool, str]:
     # Validate target to prevent command injection
-    if not target or any(char in target for char in [";", "&", "|", "`", "$", "\n", "\r"]):
+    if not target or any(
+        char in target for char in [";", "&", "|", "`", "$", "\n", "\r"]
+    ):
         return False, "invalid_target"
-    
+
     def _run() -> tuple[bool, str]:
+        arp_path = shutil.which("arp")
+        if not arp_path:
+            return False, ""
         try:
             completed = subprocess.run(
-                ["arp", "-a"],
+                [arp_path, "-a"],  # nosec B603
                 capture_output=True,
                 text=True,
                 timeout=timeout,

@@ -34,13 +34,21 @@ def _add_collector_columns(bind, columns):
         if "allowed_scopes" not in columns:
             batch.add_column(sa.Column("allowed_scopes", sa.Text(), nullable=True))
         if "cert_serial" not in columns:
-            batch.add_column(sa.Column("cert_serial", sa.String(length=128), nullable=True))
+            batch.add_column(
+                sa.Column("cert_serial", sa.String(length=128), nullable=True)
+            )
         if "cert_fingerprint" not in columns:
-            batch.add_column(sa.Column("cert_fingerprint", sa.String(length=256), nullable=True))
+            batch.add_column(
+                sa.Column("cert_fingerprint", sa.String(length=256), nullable=True)
+            )
         if "cert_valid_from" not in columns:
-            batch.add_column(sa.Column("cert_valid_from", sa.DateTime(timezone=True), nullable=True))
+            batch.add_column(
+                sa.Column("cert_valid_from", sa.DateTime(timezone=True), nullable=True)
+            )
         if "cert_valid_to" not in columns:
-            batch.add_column(sa.Column("cert_valid_to", sa.DateTime(timezone=True), nullable=True))
+            batch.add_column(
+                sa.Column("cert_valid_to", sa.DateTime(timezone=True), nullable=True)
+            )
         if "risk_flags" not in columns:
             batch.add_column(sa.Column("risk_flags", sa.Text(), nullable=True))
 
@@ -48,7 +56,9 @@ def _add_collector_columns(bind, columns):
 def _populate_default_values(bind, columns):
     """Populate default values for new columns."""
     if "uuid" in columns:
-        rows = bind.execute(sa.text("SELECT id FROM collectors WHERE uuid IS NULL")).fetchall()
+        rows = bind.execute(
+            sa.text("SELECT id FROM collectors WHERE uuid IS NULL")
+        ).fetchall()
         for (collector_id,) in rows:
             bind.execute(
                 sa.text("UPDATE collectors SET uuid = :uuid WHERE id = :id"),
@@ -73,7 +83,9 @@ def _create_certificate_table():
     op.create_table(
         "collector_certificates",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("collector_id", sa.Integer(), sa.ForeignKey("collectors.id"), nullable=False),
+        sa.Column(
+            "collector_id", sa.Integer(), sa.ForeignKey("collectors.id"), nullable=False
+        ),
         sa.Column("serial", sa.String(length=128), nullable=False),
         sa.Column("fingerprint", sa.String(length=256), nullable=False),
         sa.Column("valid_from", sa.DateTime(timezone=True), nullable=False),
@@ -88,12 +100,16 @@ def _create_enrollment_token_table():
     op.create_table(
         "collector_enrollment_tokens",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False),
+        sa.Column(
+            "tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False
+        ),
         sa.Column("site_id", sa.Integer(), sa.ForeignKey("sites.id"), nullable=True),
         sa.Column("token_hash", sa.String(length=128), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_by_user_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=True),
+        sa.Column(
+            "created_by_user_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=True
+        ),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("token_hash", name="uq_collector_enrollment_token"),
     )
@@ -102,14 +118,19 @@ def _create_enrollment_token_table():
 def upgrade() -> None:
     bind = op.get_bind()
     columns = [row[1] for row in bind.execute(sa.text("PRAGMA table_info(collectors)"))]
-    
+
     _add_collector_columns(bind, columns)
     _populate_default_values(bind, columns)
-    
+
     indexes = [row[1] for row in bind.execute(sa.text("PRAGMA index_list(collectors)"))]
     _add_collector_constraints(bind, columns, indexes)
-    
-    tables = {row[0] for row in bind.execute(sa.text("SELECT name FROM sqlite_master WHERE type='table'"))}
+
+    tables = {
+        row[0]
+        for row in bind.execute(
+            sa.text("SELECT name FROM sqlite_master WHERE type='table'")
+        )
+    }
     if "collector_certificates" not in tables:
         _create_certificate_table()
     if "collector_enrollment_tokens" not in tables:

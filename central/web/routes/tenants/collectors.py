@@ -9,6 +9,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from central.core.audit import log_audit, log_security_event
+from central.core.auth import hash_token
 from central.db.models import (
     Collector,
     CollectorEnrollmentToken,
@@ -32,7 +33,6 @@ from central.web.routes.common import (
     _wants_json,
     templates,
 )
-from central.core.auth import hash_token
 
 router = APIRouter()
 
@@ -174,7 +174,7 @@ async def tenant_collector_enrollment_create(
             "ttl_minutes must be between 1 and 1440",
         )
     token_value = secrets.token_urlsafe(32)
-        token_hash = hash_token(token_value)
+    token_hash = hash_token(token_value)
     parsed_site_id = int(site_id) if site_id else None
     expires_at = datetime.now(UTC) + timedelta(minutes=ttl_value)
     with get_session() as session:
