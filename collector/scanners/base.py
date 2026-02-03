@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
-import os
 
 from collector.utils.network import is_valid_target
 
@@ -22,7 +22,9 @@ class BaseScanner(ABC):
     required_tools: list[str] = []
 
     @abstractmethod
-    async def scan(self, targets: list[str], params: dict[str, Any]) -> list[ScanResult]:
+    async def scan(
+        self, targets: list[str], params: dict[str, Any]
+    ) -> list[ScanResult]:
         raise NotImplementedError
 
     def validate_target(self, target: str) -> bool:

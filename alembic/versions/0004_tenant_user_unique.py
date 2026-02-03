@@ -8,7 +8,6 @@ Create Date: 2024-01-04 00:00:00.000000
 
 from alembic import op
 
-
 revision = "0004_tenant_user_unique"
 down_revision = "0003_users_and_roles"
 branch_labels = None

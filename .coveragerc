@@ -1,0 +1,8 @@
+[run]
+omit =
+    central/web/*
+    central/web/routes/*
+    central/web/templates/*
+    central/workers/*
+    collector/agent/*
+    collector/scanners/*

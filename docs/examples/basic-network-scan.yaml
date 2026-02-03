@@ -1,0 +1,9 @@
+tenant: example
+site: hq
+networks:
+  - name: corp
+    cidr: 10.0.0.0/24
+schedules:
+  - name: nightly-discovery
+    scan_types: [discovery]
+    not_before_utc: "2026-01-01T00:00:00Z"

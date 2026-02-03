@@ -5,9 +5,15 @@ services:
       dockerfile: deploy/docker/central.Dockerfile
     ports:
       - "8000:8000"
+    environment:
+      ENVIRONMENT: dev
+      CENTRAL_CONFIG_FILE: /app/config/central.yaml
+      SESSION_SECRET: change-me-in-prod-change-me-in-prod
   collector:
     build:
       context: .
       dockerfile: deploy/docker/collector.Dockerfile
     depends_on:
       - central
+    environment:
+      COLLECTOR_CONFIG_FILE: /app/config/collector.yaml

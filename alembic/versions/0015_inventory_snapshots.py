@@ -4,8 +4,10 @@ Revision ID: 0015_inventory_snapshots
 Revises: 0014_site_timezone_and_schedule_utc
 Create Date: 2026-01-21 00:00:00.000000
 """
-from alembic import op
+
 import sqlalchemy as sa
+
+from alembic import op
 
 revision = "0015_inventory_snapshots"
 down_revision = "0014_site_timezone_and_schedule_utc"
@@ -17,9 +19,13 @@ def upgrade() -> None:
     op.create_table(
         "scan_runs",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False),
+        sa.Column(
+            "tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False
+        ),
         sa.Column("site_id", sa.Integer(), sa.ForeignKey("sites.id"), nullable=True),
-        sa.Column("collector_id", sa.Integer(), sa.ForeignKey("collectors.id"), nullable=True),
+        sa.Column(
+            "collector_id", sa.Integer(), sa.ForeignKey("collectors.id"), nullable=True
+        ),
         sa.Column("started_at_utc", sa.DateTime(timezone=True), nullable=True),
         sa.Column("finished_at_utc", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
@@ -41,7 +47,9 @@ def upgrade() -> None:
     op.create_table(
         "inventory_devices",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False),
+        sa.Column(
+            "tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False
+        ),
         sa.Column("site_id", sa.Integer(), sa.ForeignKey("sites.id"), nullable=True),
         sa.Column("device_uuid", sa.String(length=36), nullable=False, unique=True),
         sa.Column("vendor", sa.String(length=120), nullable=True),
@@ -58,12 +66,26 @@ def upgrade() -> None:
     op.create_table(
         "observations",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("scan_run_id", sa.Integer(), sa.ForeignKey("scan_runs.id"), nullable=False),
-        sa.Column("device_id", sa.Integer(), sa.ForeignKey("inventory_devices.id"), nullable=True),
+        sa.Column(
+            "scan_run_id", sa.Integer(), sa.ForeignKey("scan_runs.id"), nullable=False
+        ),
+        sa.Column(
+            "device_id",
+            sa.Integer(),
+            sa.ForeignKey("inventory_devices.id"),
+            nullable=True,
+        ),
         sa.Column("ip_address", sa.String(length=64), nullable=True),
         sa.Column(
             "protocol",
-            sa.Enum("discovery", "snmp", "ssh", "http", "netconf", name="observationprotocol"),
+            sa.Enum(
+                "discovery",
+                "snmp",
+                "ssh",
+                "http",
+                "netconf",
+                name="observationprotocol",
+            ),
             nullable=False,
         ),
         sa.Column("collected_at_utc", sa.DateTime(timezone=True), nullable=True),
@@ -80,10 +102,17 @@ def upgrade() -> None:
     op.create_table(
         "device_identities",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("device_id", sa.Integer(), sa.ForeignKey("inventory_devices.id"), nullable=False),
+        sa.Column(
+            "device_id",
+            sa.Integer(),
+            sa.ForeignKey("inventory_devices.id"),
+            nullable=False,
+        ),
         sa.Column(
             "identity_type",
-            sa.Enum("serial", "mac", "hostname", "sysname", "mgmt_ip", name="identitytype"),
+            sa.Enum(
+                "serial", "mac", "hostname", "sysname", "mgmt_ip", name="identitytype"
+            ),
             nullable=False,
         ),
         sa.Column("value", sa.String(length=255), nullable=False),
@@ -101,14 +130,23 @@ def upgrade() -> None:
         ),
         sa.Column("confidence", sa.Integer(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.UniqueConstraint("device_id", "identity_type", "value", name="uq_device_identity"),
+        sa.UniqueConstraint(
+            "device_id", "identity_type", "value", name="uq_device_identity"
+        ),
     )
 
     op.create_table(
         "device_snapshots",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("scan_run_id", sa.Integer(), sa.ForeignKey("scan_runs.id"), nullable=False),
-        sa.Column("device_id", sa.Integer(), sa.ForeignKey("inventory_devices.id"), nullable=False),
+        sa.Column(
+            "scan_run_id", sa.Integer(), sa.ForeignKey("scan_runs.id"), nullable=False
+        ),
+        sa.Column(
+            "device_id",
+            sa.Integer(),
+            sa.ForeignKey("inventory_devices.id"),
+            nullable=False,
+        ),
         sa.Column("vendor", sa.String(length=120), nullable=True),
         sa.Column("model", sa.String(length=120), nullable=True),
         sa.Column("device_family", sa.String(length=120), nullable=True),
@@ -129,8 +167,15 @@ def upgrade() -> None:
     op.create_table(
         "interface_snapshots",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("scan_run_id", sa.Integer(), sa.ForeignKey("scan_runs.id"), nullable=False),
-        sa.Column("device_id", sa.Integer(), sa.ForeignKey("inventory_devices.id"), nullable=False),
+        sa.Column(
+            "scan_run_id", sa.Integer(), sa.ForeignKey("scan_runs.id"), nullable=False
+        ),
+        sa.Column(
+            "device_id",
+            sa.Integer(),
+            sa.ForeignKey("inventory_devices.id"),
+            nullable=False,
+        ),
         sa.Column("name", sa.String(length=200), nullable=False),
         sa.Column("interface_type", sa.String(length=120), nullable=True),
         sa.Column("mac_address", sa.String(length=120), nullable=True),
@@ -143,14 +188,23 @@ def upgrade() -> None:
         sa.Column("vrf", sa.String(length=120), nullable=True),
         sa.Column("snapshot_hash", sa.String(length=128), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.UniqueConstraint("scan_run_id", "device_id", "name", name="uq_interface_snapshot"),
+        sa.UniqueConstraint(
+            "scan_run_id", "device_id", "name", name="uq_interface_snapshot"
+        ),
     )
 
     op.create_table(
         "ip_snapshots",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("scan_run_id", sa.Integer(), sa.ForeignKey("scan_runs.id"), nullable=False),
-        sa.Column("device_id", sa.Integer(), sa.ForeignKey("inventory_devices.id"), nullable=False),
+        sa.Column(
+            "scan_run_id", sa.Integer(), sa.ForeignKey("scan_runs.id"), nullable=False
+        ),
+        sa.Column(
+            "device_id",
+            sa.Integer(),
+            sa.ForeignKey("inventory_devices.id"),
+            nullable=False,
+        ),
         sa.Column("interface_name", sa.String(length=200), nullable=True),
         sa.Column("ip_address", sa.String(length=64), nullable=False),
         sa.Column("prefix_length", sa.Integer(), nullable=False),
@@ -170,10 +224,22 @@ def upgrade() -> None:
     op.create_table(
         "neighbor_snapshots",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("scan_run_id", sa.Integer(), sa.ForeignKey("scan_runs.id"), nullable=False),
-        sa.Column("device_id", sa.Integer(), sa.ForeignKey("inventory_devices.id"), nullable=False),
+        sa.Column(
+            "scan_run_id", sa.Integer(), sa.ForeignKey("scan_runs.id"), nullable=False
+        ),
+        sa.Column(
+            "device_id",
+            sa.Integer(),
+            sa.ForeignKey("inventory_devices.id"),
+            nullable=False,
+        ),
         sa.Column("local_interface", sa.String(length=200), nullable=False),
-        sa.Column("remote_device_id", sa.Integer(), sa.ForeignKey("inventory_devices.id"), nullable=True),
+        sa.Column(
+            "remote_device_id",
+            sa.Integer(),
+            sa.ForeignKey("inventory_devices.id"),
+            nullable=True,
+        ),
         sa.Column("remote_chassis_id", sa.String(length=200), nullable=True),
         sa.Column("remote_interface", sa.String(length=200), nullable=True),
         sa.Column("snapshot_hash", sa.String(length=128), nullable=True),
@@ -191,8 +257,15 @@ def upgrade() -> None:
     op.create_table(
         "service_snapshots",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("scan_run_id", sa.Integer(), sa.ForeignKey("scan_runs.id"), nullable=False),
-        sa.Column("device_id", sa.Integer(), sa.ForeignKey("inventory_devices.id"), nullable=False),
+        sa.Column(
+            "scan_run_id", sa.Integer(), sa.ForeignKey("scan_runs.id"), nullable=False
+        ),
+        sa.Column(
+            "device_id",
+            sa.Integer(),
+            sa.ForeignKey("inventory_devices.id"),
+            nullable=False,
+        ),
         sa.Column("port", sa.Integer(), nullable=False),
         sa.Column("protocol", sa.String(length=20), nullable=False),
         sa.Column("service_name", sa.String(length=120), nullable=True),
@@ -219,8 +292,15 @@ def upgrade() -> None:
     op.create_table(
         "config_snapshots",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("scan_run_id", sa.Integer(), sa.ForeignKey("scan_runs.id"), nullable=False),
-        sa.Column("device_id", sa.Integer(), sa.ForeignKey("inventory_devices.id"), nullable=False),
+        sa.Column(
+            "scan_run_id", sa.Integer(), sa.ForeignKey("scan_runs.id"), nullable=False
+        ),
+        sa.Column(
+            "device_id",
+            sa.Integer(),
+            sa.ForeignKey("inventory_devices.id"),
+            nullable=False,
+        ),
         sa.Column("retrieved_at_utc", sa.DateTime(timezone=True), nullable=True),
         sa.Column("config_hash", sa.String(length=128), nullable=True),
         sa.Column("storage_ref", sa.Text(), nullable=True),

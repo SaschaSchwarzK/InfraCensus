@@ -1,0 +1,400 @@
+from __future__ import annotations
+
+import ipaddress
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy import or_
+from sqlalchemy.orm import Session, joinedload
+
+from central.core.config import settings
+from central.core.metrics import job_assigned_counter
+from central.core.parsing import parse_int_list, parse_labels, parse_str_list
+from central.db.models import (
+    Collector,
+    CollectorAffinity,
+    Network,
+    NetworkRateLimit,
+    ScanSchedule,
+    ScanScheduleType,
+)
+
+
+@dataclass(frozen=True)
+class JobSpec:
+    job_id: str
+    scan_type: str
+    targets: list[str]
+    params: dict[str, str | int | float | bool | None | list[str]]
+    expires_at: datetime | None
+
+
+def _validate_id(value: int | None, name: str) -> int:
+    if not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
+    return value
+
+
+def select_jobs_for_collector(
+    session: Session,
+    collector: Collector,
+    now: datetime,
+    max_jobs: int,
+) -> list[JobSpec]:
+    if max_jobs <= 0:
+        return []
+
+    tenant_id = _validate_id(collector.tenant_id, "tenant_id")
+    collector_id = _validate_id(collector.id, "collector_id")
+
+    capabilities = _parse_str_list(collector.capabilities)
+    labels = _parse_labels(collector.labels)
+    capacity = _collector_capacity(labels)
+    inflight = _collector_inflight(session, collector_id)
+    remaining = min(max_jobs, max(0, capacity - inflight))
+    if remaining <= 0:
+        return []
+
+    _release_stale_assignments(session, now)
+    affinities = (
+        session.query(CollectorAffinity)
+        .filter(CollectorAffinity.tenant_id == tenant_id)
+        .all()
+    )
+
+    bind = getattr(session, "get_bind", None)
+    dialect_name = None
+    if callable(bind):
+        engine_or_conn = session.get_bind()
+        dialect = getattr(engine_or_conn, "dialect", None)
+        dialect_name = getattr(dialect, "name", None)
+        if not dialect_name:
+            try:
+                from sqlalchemy import inspect
+
+                dialect_name = inspect(engine_or_conn).engine.dialect.name
+            except Exception:
+                dialect_name = None
+    query_now = now
+    if dialect_name == "sqlite" and now.tzinfo is not None:
+        query_now = now.replace(tzinfo=None)
+
+    if dialect_name == "sqlite":
+        candidates = (
+            session.query(ScanScheduleType)
+            .options(joinedload(ScanScheduleType.schedule))
+            .filter(ScanScheduleType.finished_at_utc.is_(None))
+            .filter(ScanScheduleType.actual_start_at_utc.is_(None))
+            .filter(ScanScheduleType.assigned_collector_id.is_(None))
+            .order_by(
+                ScanScheduleType.priority.desc(),
+                ScanScheduleType.scheduled_at_utc.asc(),
+                ScanScheduleType.id.asc(),
+            )
+            .limit(remaining)
+            .all()
+        )
+    else:
+        candidates_query = (
+            session.query(ScanScheduleType)
+            .join(ScanSchedule)
+            .options(joinedload(ScanScheduleType.schedule))
+            .filter(ScanSchedule.tenant_id == tenant_id)
+            .filter(ScanSchedule.finished_at_utc.is_(None))
+            .filter(ScanScheduleType.finished_at_utc.is_(None))
+            .filter(ScanScheduleType.actual_start_at_utc.is_(None))
+            .filter(ScanScheduleType.assigned_collector_id.is_(None))
+            .filter(ScanScheduleType.scheduled_at_utc <= query_now)
+            .filter(
+                or_(
+                    ScanScheduleType.not_before_utc.is_(None),
+                    ScanScheduleType.not_before_utc <= query_now,
+                )
+            )
+            .filter(
+                or_(
+                    ScanScheduleType.not_after_utc.is_(None),
+                    ScanScheduleType.not_after_utc >= query_now,
+                )
+            )
+            .order_by(
+                ScanScheduleType.priority.desc(),
+                ScanScheduleType.scheduled_at_utc.asc(),
+                ScanScheduleType.id.asc(),
+            )
+            .with_for_update(skip_locked=True)
+            .limit(remaining)
+        )
+        candidates = candidates_query.all()
+
+    all_network_ids: set[int] = set()
+    for entry in candidates:
+        schedule = entry.schedule
+        if schedule is None:
+            continue
+        all_network_ids.update(_parse_int_list(schedule.network_ids))
+    all_networks_map: dict[int, Network] = {}
+    if all_network_ids:
+        records = session.query(Network).filter(Network.id.in_(all_network_ids)).all()
+        all_networks_map = {record.id: record for record in records}
+
+    jobs: list[JobSpec] = []
+    for entry in candidates:
+        schedule = entry.schedule
+        if schedule is None:
+            continue
+        if schedule.tenant_id != tenant_id:
+            continue
+        if schedule.finished_at_utc is not None:
+            continue
+        if schedule.scheduled_at_utc:
+            scheduled_at = _normalize_compare_time(schedule.scheduled_at_utc, now)
+            if scheduled_at > now:
+                continue
+        if not _within_window(schedule.not_before_utc, schedule.not_after_utc, now):
+            continue
+        if schedule.site_id is not None and collector.site_id != schedule.site_id:
+            continue
+        if capabilities and entry.scan_type not in capabilities:
+            continue
+        network_ids = _parse_int_list(schedule.network_ids)
+        if not network_ids:
+            continue
+        network_map = {
+            network_id: all_networks_map[network_id]
+            for network_id in network_ids
+            if network_id in all_networks_map
+        }
+        targets = [net.cidr for net in network_map.values() if net.cidr]
+        if not targets:
+            continue
+        if not _affinity_allows(collector, entry.scan_type, network_map, affinities):
+            continue
+        network_id_list = [net.id for net in network_map.values()]
+        if not _rate_limit_allows(session, schedule.tenant_id, network_id_list, now):
+            continue
+
+        job_id = f"schedule_type:{entry.id}"
+        entry.assigned_collector_id = collector.id
+        entry.assigned_at_utc = now
+        job_assigned_counter.labels(
+            scan_type=entry.scan_type,
+            tenant_id=str(schedule.tenant_id),
+        ).inc()
+        params: dict[str, str | int | float | bool | None | list[str]] = {
+            "schedule_id": schedule.id,
+            "schedule_type_id": entry.id,
+            "tenant_id": schedule.tenant_id,
+            "site_id": schedule.site_id,
+            "network_ids": [str(nid) for nid in network_ids],
+            "priority": entry.priority,
+            "rate_limit_per_minute": settings.scheduler_network_rate_limit_per_minute,
+            "rate_limit_window_seconds": settings.scheduler_network_rate_limit_window_seconds,
+        }
+        jobs.append(
+            JobSpec(
+                job_id=job_id,
+                scan_type=entry.scan_type,
+                targets=targets,
+                params=params,
+                expires_at=entry.not_after_utc or schedule.not_after_utc,
+            )
+        )
+        if len(jobs) >= remaining:
+            break
+    return jobs
+
+
+def parse_job_id(job_id: str) -> int | None:
+    if not job_id:
+        return None
+    value = job_id.strip()
+    prefix = "schedule_type:"
+    if not value.startswith(prefix):
+        return None
+    suffix = value[len(prefix) :]
+    if not suffix or not suffix.isdigit():
+        return None
+    parsed = int(suffix)
+    return parsed if parsed > 0 else None
+
+
+def _release_stale_assignments(session: Session, now: datetime) -> None:
+    cutoff = now.timestamp() - settings.scheduler_job_assignment_ttl_seconds
+    stale_before = datetime.fromtimestamp(cutoff, tz=UTC)
+    session.query(ScanScheduleType).filter(
+        ScanScheduleType.assigned_at_utc.isnot(None),
+        ScanScheduleType.assigned_at_utc < stale_before,
+        ScanScheduleType.actual_start_at_utc.is_(None),
+        ScanScheduleType.finished_at_utc.is_(None),
+    ).update(
+        {
+            ScanScheduleType.assigned_collector_id: None,
+            ScanScheduleType.assigned_at_utc: None,
+        },
+        synchronize_session=False,
+    )
+
+
+def _collector_inflight(session: Session, collector_id: int) -> int:
+    return (
+        session.query(ScanScheduleType)
+        .filter(ScanScheduleType.assigned_collector_id == collector_id)
+        .filter(ScanScheduleType.finished_at_utc.is_(None))
+        .count()
+    )
+
+
+def _rate_limit_allows(
+    session: Any, tenant_id: int, network_ids: list[int], now: datetime
+) -> bool:
+    if settings.scheduler_network_rate_limit_per_minute <= 0:
+        return True
+    if not network_ids:
+        return True
+
+    records = session.query(NetworkRateLimit).filter(
+        NetworkRateLimit.network_id.in_(network_ids)
+    )
+    if hasattr(records, "with_for_update"):
+        records = records.with_for_update()
+    records = records.all()
+    record_map = {record.network_id: record for record in records}
+    for network_id in network_ids:
+        record = record_map.get(network_id)
+        if not record:
+            continue
+        window_start = record.window_start_at_utc
+        if window_start.tzinfo is None and now.tzinfo is not None:
+            window_start = window_start.replace(tzinfo=UTC)
+        if window_start.tzinfo is not None and now.tzinfo is None:
+            window_start = window_start.replace(tzinfo=None)
+        if (
+            now - window_start
+        ).total_seconds() >= settings.scheduler_network_rate_limit_window_seconds:
+            record.window_start_at_utc = now
+            record.count = 0
+        if record.count + 1 > settings.scheduler_network_rate_limit_per_minute:
+            return False
+    for network_id in network_ids:
+        record = record_map.get(network_id)
+        if record is None:
+            record = NetworkRateLimit(
+                tenant_id=tenant_id,
+                network_id=network_id,
+                window_start_at_utc=now,
+                count=1,
+                updated_at=now,
+            )
+            session.add(record)
+            record_map[network_id] = record
+        else:
+            record.count += 1
+            record.updated_at = now
+    return True
+
+
+def _collector_capacity(labels: dict[str, str]) -> int:
+    for key in ("capacity", "max_jobs", "max_concurrent_jobs"):
+        if key in labels:
+            try:
+                value = int(labels[key])
+                if value > 0:
+                    return value
+            except ValueError:
+                continue
+    return settings.scheduler_default_capacity
+
+
+def _parse_int_list(value: str | list[int] | list[str] | None) -> list[int]:
+    return parse_int_list(value)
+
+
+def _parse_str_list(value: str | list[str] | None) -> list[str]:
+    return parse_str_list(value)
+
+
+def _parse_labels(raw: str | dict | None) -> dict[str, str]:
+    return parse_labels(raw) or {}
+
+
+def _within_window(
+    not_before: datetime | None, not_after: datetime | None, now: datetime
+) -> bool:
+    if not_before and not_before.tzinfo is None and now.tzinfo is not None:
+        not_before = not_before.replace(tzinfo=UTC)
+    if not_after and not_after.tzinfo is None and now.tzinfo is not None:
+        not_after = not_after.replace(tzinfo=UTC)
+    if not_before and now < not_before:
+        return False
+    if not_after and now > not_after:
+        return False
+    return True
+
+
+def _normalize_compare_time(value: datetime, now: datetime) -> datetime:
+    if value.tzinfo is None and now.tzinfo is not None:
+        return value.replace(tzinfo=UTC)
+    if value.tzinfo is not None and now.tzinfo is None:
+        return value.replace(tzinfo=None)
+    return value
+
+
+def _load_networks(session: Session, network_ids: list[int]) -> dict[int, Network]:
+    if not network_ids:
+        return {}
+
+    records = session.query(Network).filter(Network.id.in_(network_ids)).all()
+    return {record.id: record for record in records}
+
+
+def _affinity_allows(
+    collector: Collector,
+    scan_type: str,
+    networks: dict[int, Network],
+    affinities: list[CollectorAffinity],
+) -> bool:
+    if not affinities:
+        return True
+    for network in networks.values():
+        matches = []
+        for affinity in affinities:
+            if affinity.scan_type and affinity.scan_type != scan_type:
+                continue
+            if affinity.network_id is not None and affinity.network_id == network.id:
+                matches.append(affinity)
+                continue
+            if affinity.subnet_cidr:
+                if _network_in_subnet(network.cidr, affinity.subnet_cidr):
+                    matches.append(affinity)
+        if not matches:
+            continue
+        max_priority = max(entry.priority for entry in matches)
+        if not any(
+            entry.collector_id == collector.id and entry.priority == max_priority
+            for entry in matches
+        ):
+            return False
+    return True
+
+
+def _network_in_subnet(network_cidr: str | None, affinity_cidr: str) -> bool:
+    if not network_cidr:
+        return False
+    try:
+        network = ipaddress.ip_network(network_cidr, strict=False)
+        affinity_net = ipaddress.ip_network(affinity_cidr, strict=False)
+    except ValueError:
+        return False
+    if isinstance(network, ipaddress.IPv4Network) and isinstance(
+        affinity_net, ipaddress.IPv4Network
+    ):
+        return network.subnet_of(affinity_net)
+    if isinstance(network, ipaddress.IPv6Network) and isinstance(
+        affinity_net, ipaddress.IPv6Network
+    ):
+        return network.subnet_of(affinity_net)
+    return False

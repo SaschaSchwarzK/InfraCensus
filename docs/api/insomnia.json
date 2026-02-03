@@ -1,0 +1,356 @@
+{
+  "_type": "export",
+  "__export_format": 4,
+  "__export_date": "2026-01-30T00:00:00.000Z",
+  "__export_source": "infracensus",
+  "resources": [
+    {
+      "_id": "wrk_infracensus",
+      "_type": "workspace",
+      "name": "InfraCensus",
+      "description": "Central and collector APIs",
+      "scope": "collection"
+    },
+    {
+      "_id": "env_infracensus_base",
+      "_type": "environment",
+      "parentId": "wrk_infracensus",
+      "name": "Base Environment",
+      "data": {
+        "central_base_url": "http://localhost:8000",
+        "collector_base_url": "http://localhost:8080",
+        "api_key": "",
+        "collector_token": "",
+        "enrollment_token": "",
+        "collector_cert_serial": "",
+        "collector_cert_fingerprint": "",
+        "csr_pem": "-----BEGIN CERTIFICATE REQUEST-----\n...\n-----END CERTIFICATE REQUEST-----",
+        "timestamp": "2026-01-30T00:00:00Z",
+        "job_id": "schedule:1",
+        "schedule_id": 1,
+        "schedule_type_id": 1
+      }
+    },
+    {
+      "_id": "grp_central",
+      "_type": "request_group",
+      "parentId": "wrk_infracensus",
+      "name": "Central API"
+    },
+    {
+      "_id": "grp_collector",
+      "_type": "request_group",
+      "parentId": "wrk_infracensus",
+      "name": "Collector API"
+    },
+    {
+      "_id": "req_central_health",
+      "_type": "request",
+      "parentId": "grp_central",
+      "name": "Health",
+      "method": "GET",
+      "url": "{{ central_base_url }}/health",
+      "headers": []
+    },
+    {
+      "_id": "req_central_metrics",
+      "_type": "request",
+      "parentId": "grp_central",
+      "name": "Metrics",
+      "method": "GET",
+      "url": "{{ central_base_url }}/metrics",
+      "headers": []
+    },
+    {
+      "_id": "req_central_openapi",
+      "_type": "request",
+      "parentId": "grp_central",
+      "name": "OpenAPI",
+      "method": "GET",
+      "url": "{{ central_base_url }}/openapi.json",
+      "headers": []
+    },
+    {
+      "_id": "req_collector_health",
+      "_type": "request",
+      "parentId": "grp_collector",
+      "name": "Health",
+      "method": "GET",
+      "url": "{{ collector_base_url }}/health",
+      "headers": []
+    },
+    {
+      "_id": "req_collector_metrics",
+      "_type": "request",
+      "parentId": "grp_collector",
+      "name": "Metrics",
+      "method": "GET",
+      "url": "{{ collector_base_url }}/metrics",
+      "headers": []
+    },
+    {
+      "_id": "req_collector_enroll",
+      "_type": "request",
+      "parentId": "grp_collector",
+      "name": "Enroll Collector",
+      "method": "POST",
+      "url": "{{ central_base_url }}/collectors/enroll",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"token\": \"{{ enrollment_token }}\",\n  \"csr\": \"{{ csr_pem }}\",\n  \"name\": \"collector-1\",\n  \"capabilities\": [\"nmap\"],\n  \"labels\": {\"region\": \"lab\"}\n}"
+      }
+    },
+    {
+      "_id": "req_collector_renew",
+      "_type": "request",
+      "parentId": "grp_collector",
+      "name": "Renew Certificate",
+      "method": "POST",
+      "url": "{{ central_base_url }}/collectors/renew",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "x-client-cert-serial",
+          "value": "{{ collector_cert_serial }}"
+        },
+        {
+          "name": "x-client-cert-fingerprint",
+          "value": "{{ collector_cert_fingerprint }}"
+        }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"csr\": \"{{ csr_pem }}\"\n}"
+      }
+    },
+    {
+      "_id": "req_collector_poll",
+      "_type": "request",
+      "parentId": "grp_collector",
+      "name": "Poll Jobs",
+      "method": "GET",
+      "url": "{{ central_base_url }}/collectors/jobs/poll",
+      "headers": [
+        {
+          "name": "x-timestamp",
+          "value": "{{ timestamp }}"
+        },
+        {
+          "name": "x-client-cert-serial",
+          "value": "{{ collector_cert_serial }}"
+        },
+        {
+          "name": "x-client-cert-fingerprint",
+          "value": "{{ collector_cert_fingerprint }}"
+        }
+      ]
+    },
+    {
+      "_id": "req_collector_ack",
+      "_type": "request",
+      "parentId": "grp_collector",
+      "name": "Acknowledge Job",
+      "method": "POST",
+      "url": "{{ central_base_url }}/collectors/jobs/ack",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "x-timestamp",
+          "value": "{{ timestamp }}"
+        },
+        {
+          "name": "x-client-cert-serial",
+          "value": "{{ collector_cert_serial }}"
+        },
+        {
+          "name": "x-client-cert-fingerprint",
+          "value": "{{ collector_cert_fingerprint }}"
+        }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"job_id\": \"{{ job_id }}\",\n  \"collector_time_utc\": \"{{ timestamp }}\"\n}"
+      }
+    },
+    {
+      "_id": "req_collector_status",
+      "_type": "request",
+      "parentId": "grp_collector",
+      "name": "Submit Job Status",
+      "method": "POST",
+      "url": "{{ central_base_url }}/collectors/jobs/status",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "x-timestamp",
+          "value": "{{ timestamp }}"
+        },
+        {
+          "name": "x-client-cert-serial",
+          "value": "{{ collector_cert_serial }}"
+        },
+        {
+          "name": "x-client-cert-fingerprint",
+          "value": "{{ collector_cert_fingerprint }}"
+        }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"job_id\": \"{{ job_id }}\",\n  \"status\": \"running\",\n  \"progress\": 20,\n  \"collector_time_utc\": \"{{ timestamp }}\"\n}"
+      }
+    },
+    {
+      "_id": "req_collector_result",
+      "_type": "request",
+      "parentId": "grp_collector",
+      "name": "Submit Job Result",
+      "method": "POST",
+      "url": "{{ central_base_url }}/collectors/jobs/result",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "x-timestamp",
+          "value": "{{ timestamp }}"
+        },
+        {
+          "name": "x-client-cert-serial",
+          "value": "{{ collector_cert_serial }}"
+        },
+        {
+          "name": "x-client-cert-fingerprint",
+          "value": "{{ collector_cert_fingerprint }}"
+        }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"job_id\": \"{{ job_id }}\",\n  \"collector_time_utc\": \"{{ timestamp }}\",\n  \"results\": [\n    {\n      \"target\": \"10.0.0.1\",\n      \"status\": \"ok\",\n      \"duration_ms\": 1200\n    }\n  ]\n}"
+      }
+    },
+    {
+      "_id": "req_collector_credentials",
+      "_type": "request",
+      "parentId": "grp_collector",
+      "name": "Resolve Credentials",
+      "method": "POST",
+      "url": "{{ central_base_url }}/collectors/credentials/resolve",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "x-timestamp",
+          "value": "{{ timestamp }}"
+        },
+        {
+          "name": "x-client-cert-serial",
+          "value": "{{ collector_cert_serial }}"
+        },
+        {
+          "name": "x-client-cert-fingerprint",
+          "value": "{{ collector_cert_fingerprint }}"
+        }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"protocol\": \"ssh\",\n  \"targets\": [\"10.0.0.1\"]\n}"
+      }
+    },
+    {
+      "_id": "req_collector_schedule_type_status",
+      "_type": "request",
+      "parentId": "grp_collector",
+      "name": "Update Schedule Type Status",
+      "method": "POST",
+      "url": "{{ central_base_url }}/collectors/schedules/{{ schedule_id }}/types/{{ schedule_type_id }}/status",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "x-timestamp",
+          "value": "{{ timestamp }}"
+        },
+        {
+          "name": "x-client-cert-serial",
+          "value": "{{ collector_cert_serial }}"
+        },
+        {
+          "name": "x-client-cert-fingerprint",
+          "value": "{{ collector_cert_fingerprint }}"
+        }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"actual_start_at_utc\": \"{{ timestamp }}\",\n  \"finished_at_utc\": \"{{ timestamp }}\",\n  \"collector_time_utc\": \"{{ timestamp }}\"\n}"
+      }
+    },
+    {
+      "_id": "req_collector_schedule_status",
+      "_type": "request",
+      "parentId": "grp_collector",
+      "name": "Update Schedule Status",
+      "method": "POST",
+      "url": "{{ central_base_url }}/collectors/schedules/{{ schedule_id }}/status",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "x-timestamp",
+          "value": "{{ timestamp }}"
+        },
+        {
+          "name": "x-client-cert-serial",
+          "value": "{{ collector_cert_serial }}"
+        },
+        {
+          "name": "x-client-cert-fingerprint",
+          "value": "{{ collector_cert_fingerprint }}"
+        }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"actual_start_at_utc\": \"{{ timestamp }}\",\n  \"finished_at_utc\": \"{{ timestamp }}\",\n  \"collector_time_utc\": \"{{ timestamp }}\"\n}"
+      }
+    },
+    {
+      "_id": "req_central_ready",
+      "_type": "request",
+      "parentId": "grp_central",
+      "name": "Ready",
+      "method": "GET",
+      "url": "{{ central_base_url }}/ready",
+      "headers": []
+    },
+    {
+      "_id": "req_collector_ready",
+      "_type": "request",
+      "parentId": "grp_collector",
+      "name": "Ready",
+      "method": "GET",
+      "url": "{{ collector_base_url }}/ready",
+      "headers": []
+    }
+  ]
+}

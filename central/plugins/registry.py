@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from typing import Any, Type
+from typing import Any
 
 from central.plugins.base import Plugin
 
 
 class PluginRegistry:
     def __init__(self) -> None:
-        self._plugins: dict[str, Type[Plugin]] = {}
+        self._plugins: dict[str, type[Plugin]] = {}
 
-    def register(self, plugin_cls: Type[Plugin]) -> None:
+    def register(self, plugin_cls: type[Plugin]) -> None:
         name = getattr(plugin_cls, "name", None)
         if not name:
             raise ValueError("Plugin class must define a non-empty name")

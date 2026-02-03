@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
-from datetime import datetime, timezone
 import logging
+from datetime import UTC, datetime
+from typing import Any
 
 from central.core.celery_config import celery_app
 from central.core.logging import log_info, log_warning
@@ -27,15 +27,33 @@ def export_inventory_task(
         log_warning(logging.getLogger(__name__), "exporter.unknown", exporter=exporter)
         return {"status": "error", "error": "unknown_exporter"}
     log_info(logging.getLogger(__name__), "exporter.run", exporter=exporter)
-    result = plugin.run(payload)
-    _mark_schedule_finished(export_schedule_id)
-    return {"status": "ok", "exporter": exporter, "result": result}
+    try:
+        result = plugin.run(payload)
+        _mark_schedule_finished(export_schedule_id)
+        return {"status": "ok", "exporter": exporter, "result": result}
+    except (
+        RuntimeError,
+        ValueError,
+        OSError,
+        TypeError,
+        AttributeError,
+        KeyError,
+        ImportError,
+    ) as exc:
+        log_warning(
+            logging.getLogger(__name__),
+            "exporter.failed",
+            exporter=exporter,
+            error=str(exc),
+        )
+        _mark_schedule_finished(export_schedule_id)
+        return {"status": "error", "error": str(exc)}
 
 
 def _mark_schedule_finished(export_schedule_id: int | None) -> None:
     if export_schedule_id is None:
         return
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     with get_session() as session:
         entry = (
             session.query(ExportSchedule)

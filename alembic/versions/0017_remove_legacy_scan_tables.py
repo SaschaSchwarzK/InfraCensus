@@ -4,6 +4,7 @@ Revision ID: 0017_remove_legacy_scan_tables
 Revises: 0016_worker_failure_logs
 Create Date: 2026-01-21 00:00:00.000000
 """
+
 from alembic import op
 
 revision = "0017_remove_legacy_scan_tables"
