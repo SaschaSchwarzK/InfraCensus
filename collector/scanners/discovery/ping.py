@@ -4,7 +4,7 @@ import asyncio
 import ipaddress
 import re
 import shutil
-import subprocess
+import subprocess # nosec B404
 import time
 from typing import Any
 

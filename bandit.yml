@@ -6,4 +6,3 @@ exclude_dirs: ["tests", "scripts", "venv", ".venv", "env", "site-packages", "dis
 
 # Optional global skips (keep minimal; prefer inline `# nosec` with justification)
 skips:
-  - B404 # Consider possible security implications associated with the subprocess module
