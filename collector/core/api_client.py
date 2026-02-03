@@ -4,6 +4,8 @@ import asyncio
 import time
 from asyncio import Lock
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
@@ -30,6 +32,7 @@ class ApiClient:
         backoff_seconds: float = 0.5,
         circuit_breaker_threshold: int = 5,
         circuit_breaker_cooldown: int = 30,
+        default_headers: dict[str, str] | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/") + "/"
         self._client = httpx.AsyncClient(
@@ -37,6 +40,7 @@ class ApiClient:
             verify=verify,
             cert=cert,
         )
+        self._cert = cert
         self._max_retries = max_retries
         self._backoff_seconds = backoff_seconds
         self._failure_count = 0
@@ -45,6 +49,7 @@ class ApiClient:
         self._cb_cooldown = circuit_breaker_cooldown
         self._request_metrics: dict[tuple[str, int], dict[str, float]] = {}
         self._metrics_lock = Lock()
+        self._default_headers = default_headers or {}
 
     async def __aenter__(self) -> ApiClient:
         return self
@@ -96,7 +101,12 @@ class ApiClient:
         for attempt in range(self._max_retries + 1):
             try:
                 start = time.perf_counter()
-                headers: dict[str, str] = {}
+                headers = dict(self._default_headers)
+                self._maybe_add_identity_headers(headers)
+                headers.setdefault(
+                    "x-timestamp",
+                    datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                )
                 with tracer.start_as_current_span("http.client") as span:
                     span.set_attribute("http.method", method)
                     span.set_attribute("http.url", url)
@@ -161,4 +171,28 @@ class ApiClient:
     def circuit_open(self) -> bool:
         return bool(
             self._circuit_open_until and time.monotonic() < self._circuit_open_until
+        )
+
+    def _maybe_add_identity_headers(self, headers: dict[str, str]) -> None:
+        if headers.get("x-client-cert-serial") and headers.get(
+            "x-client-cert-fingerprint"
+        ):
+            return
+        if not self._cert:
+            return
+        cert_path = Path(self._cert[0])
+        if not cert_path.exists():
+            return
+        try:
+            from cryptography import x509
+            from cryptography.hazmat.primitives import hashes
+        except Exception:
+            return
+        try:
+            cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+        except (ValueError, OSError):
+            return
+        headers.setdefault("x-client-cert-serial", format(cert.serial_number, "x"))
+        headers.setdefault(
+            "x-client-cert-fingerprint", cert.fingerprint(hashes.SHA256()).hex()
         )

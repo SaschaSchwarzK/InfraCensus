@@ -48,7 +48,7 @@ services:
       POLL_INTERVAL: "2"
       COLLECTOR_NAME: e2e-collector
       COLLECTOR_LABELS: capacity=2
-      COLLECTOR_CAPABILITIES: discovery
+      COLLECTOR_CAPABILITIES: ping
       HEALTH_HOST: 0.0.0.0
       CERTS_PATH: /collector/certs
       STORAGE_PATH: /collector/data

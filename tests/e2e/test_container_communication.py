@@ -75,7 +75,15 @@ def test_container_collector_flow(tmp_path: Path) -> None:
 
     def _compose_logs(service: str) -> str:
         result = subprocess.run(
-            ["docker", "compose", "-f", str(compose_file), "logs", "--no-color", service],
+            [
+                "docker",
+                "compose",
+                "-f",
+                str(compose_file),
+                "logs",
+                "--no-color",
+                service,
+            ],
             check=False,
             env=log_env,
             capture_output=True,
@@ -86,7 +94,17 @@ def test_container_collector_flow(tmp_path: Path) -> None:
         return result.stderr or ""
 
     subprocess.run(
-        ["docker", "compose", "-f", str(compose_file), "up", "-d", "--build", "postgres", "central"],
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(compose_file),
+            "up",
+            "-d",
+            "--build",
+            "postgres",
+            "central",
+        ],
         check=True,
         env=env,
     )
@@ -98,10 +116,14 @@ def test_container_collector_flow(tmp_path: Path) -> None:
             logs = _compose_logs("central")
             raise AssertionError(f"{exc}\ncentral logs:\n{logs}") from exc
 
-        db_url = "postgresql+psycopg://infracensus:infracensus@localhost:15432/infracensus"
+        db_url = (
+            "postgresql+psycopg://infracensus:infracensus@localhost:15432/infracensus"
+        )
         engine = create_engine(db_url, future=True)
         Base.metadata.create_all(engine)
-        SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
+        SessionLocal = sessionmaker(
+            bind=engine, autoflush=False, expire_on_commit=False, future=True
+        )
 
         token = "e2e-token"
         token_hash = hash_token(token)
@@ -126,7 +148,16 @@ def test_container_collector_flow(tmp_path: Path) -> None:
 
         env_with_token = {**env, "ENROLLMENT_TOKEN": token}
         subprocess.run(
-            ["docker", "compose", "-f", str(compose_file), "up", "-d", "collector"],
+            [
+                "docker",
+                "compose",
+                "-f",
+                str(compose_file),
+                "up",
+                "-d",
+                "--build",
+                "collector",
+            ],
             check=True,
             env=env_with_token,
         )
@@ -135,7 +166,11 @@ def test_container_collector_flow(tmp_path: Path) -> None:
         deadline = time.time() + 60
         while time.time() < deadline:
             with SessionLocal() as session:
-                collector = session.query(Collector).filter(Collector.name == "e2e-collector").one_or_none()
+                collector = (
+                    session.query(Collector)
+                    .filter(Collector.name == "e2e-collector")
+                    .one_or_none()
+                )
             if collector and collector.cert_serial:
                 break
             time.sleep(2)
@@ -162,64 +197,31 @@ def test_container_collector_flow(tmp_path: Path) -> None:
             session.flush()
             schedule_type = ScanScheduleType(
                 schedule_id=schedule.id,
-                scan_type="discovery",
+                scan_type="ping",
                 scheduled_at_utc=now - timedelta(minutes=1),
                 priority=1,
             )
             session.add(schedule_type)
             session.commit()
 
-        headers = {
-            "x-client-cert-serial": collector.cert_serial,
-            "x-client-cert-fingerprint": collector.cert_fingerprint or "",
-            "x-timestamp": _timestamp(),
-        }
-
-        poll_resp = httpx.get(
-            "http://localhost:18000/api/v1/collectors/jobs/poll",
-            headers=headers,
-            timeout=10.0,
-        )
-        if poll_resp.status_code != 200:
-            logs = _compose_logs("central")
+        deadline = time.time() + 120
+        finished = False
+        while time.time() < deadline:
+            with SessionLocal() as session:
+                updated = (
+                    session.query(ScanScheduleType)
+                    .filter(ScanScheduleType.id == schedule_type.id)
+                    .one()
+                )
+                if updated.finished_at_utc is not None:
+                    finished = True
+                    break
+            time.sleep(2)
+        if not finished:
+            logs = _compose_logs("collector")
             raise AssertionError(
-                f"Poll failed: {poll_resp.status_code} {poll_resp.text}\ncentral logs:\n{logs}"
+                f"Collector did not complete job.\ncollector logs:\n{logs}"
             )
-        jobs = poll_resp.json().get("jobs") or []
-        assert jobs
-        job_id = jobs[0]["job_id"]
-
-        ack_resp = httpx.post(
-            "http://localhost:18000/api/v1/collectors/jobs/ack",
-            json={"job_id": job_id, "collector_time_utc": _timestamp()},
-            headers=headers,
-            timeout=10.0,
-        )
-        assert ack_resp.status_code == 200
-
-        status_resp = httpx.post(
-            "http://localhost:18000/api/v1/collectors/jobs/status",
-            json={"job_id": job_id, "status": "completed", "collector_time_utc": _timestamp()},
-            headers=headers,
-            timeout=10.0,
-        )
-        assert status_resp.status_code == 200
-
-        result_resp = httpx.post(
-            "http://localhost:18000/api/v1/collectors/jobs/result",
-            json={
-                "job_id": job_id,
-                "collector_time_utc": _timestamp(),
-                "results": [{"ip": "10.0.0.1", "success": True, "duration_ms": 5, "data": {}}],
-            },
-            headers=headers,
-            timeout=10.0,
-        )
-        assert result_resp.status_code == 200
-
-        with SessionLocal() as session:
-            updated = session.query(ScanScheduleType).filter(ScanScheduleType.id == schedule_type.id).one()
-            assert updated.finished_at_utc is not None
     finally:
         subprocess.run(
             ["docker", "compose", "-f", str(compose_file), "down", "-v"],
