@@ -20,10 +20,10 @@ def test_schema_allows_valid_config():
 
 def test_schema_rejects_plain_api_keys():
     with pytest.raises(ValidationError):
-        CentralConfigSchema(api_keys="plain-key:read_only")
+        CentralConfigSchema(api_keys=":read_only")
 
 
 def test_schema_allows_hashed_api_keys():
-    key_hash = "a" * 64
+    key_hash = "$argon2id$v=19$m=65536,t=3,p=4$YWJj$Zm9v"
     config = CentralConfigSchema(api_keys=f"{key_hash}:read_only|scan_operator")
     assert config.api_keys == f"{key_hash}:read_only|scan_operator"

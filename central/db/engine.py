@@ -31,9 +31,7 @@ def _build_engine(current: Settings | SettingsProxy) -> tuple[Engine, sessionmak
     elif database_url.startswith("postgres://"):
         database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
     elif database_url.startswith("postgresql://"):
-        database_url = database_url.replace(
-            "postgresql://", "postgresql+psycopg://", 1
-        )
+        database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
     if database_url.startswith("sqlite"):
         engine_kwargs["connect_args"] = {"check_same_thread": False}
         engine_kwargs["poolclass"] = NullPool
