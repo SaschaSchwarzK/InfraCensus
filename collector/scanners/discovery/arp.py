@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-import subprocess # nosec B404
+import subprocess  # nosec B404
 import time
 from typing import Any
 
