@@ -130,6 +130,8 @@ def _isolate_test_db(monkeypatch):
             engine_module.engine.dispose()
         except Exception:
             pass
+        return
+    yield
 
 
 @pytest.fixture(autouse=True)

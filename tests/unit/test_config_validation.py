@@ -39,13 +39,18 @@ def test_settings_validate_rejects_bad_values() -> None:
 
 
 def test_config_schema_rejects_invalid_api_keys() -> None:
-    with pytest.raises(ValueError, match="api_keys must use sha256"):
-        CentralConfigSchema(api_keys="not-a-hash:read")
+    with pytest.raises(ValueError, match="entries must include a hash"):
+        CentralConfigSchema(api_keys=":read")
 
 
 def test_config_schema_accepts_defaults() -> None:
     schema = CentralConfigSchema()
     assert schema.api_port == 8000
+
+
+def test_config_schema_allows_argon2_hashes() -> None:
+    sample = "$argon2id$v=19$m=65536,t=3,p=4$YWJj$Zm9v"
+    CentralConfigSchema(api_keys=f"{sample}:read|write")
 
 
 def test_config_schema_rejects_negative_values() -> None:

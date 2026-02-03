@@ -78,8 +78,8 @@ class CentralConfigSchema(BaseModel):
                 continue
             key_hash, _, _scopes = entry.partition(":")
             key_hash = key_hash.strip()
-            if not re.fullmatch(r"[0-9a-f]{64}", key_hash):
-                raise ValueError("api_keys must use sha256 hex hashes")
+            if not key_hash:
+                raise ValueError("api_keys entries must include a hash before ':'")
         return value
 
     @field_validator(
