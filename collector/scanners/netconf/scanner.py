@@ -199,10 +199,10 @@ class NetconfScanner(BaseScanner):
             data.extend(chunk)
 
             # Check for message delimiter
-            decoded = data.decode("utf-8", errors="ignore")
-            if self.MSG_DELIMITER in decoded:
-                # Return message without delimiter
-                return decoded.split(self.MSG_DELIMITER)[0]
+            delimiter = self.MSG_DELIMITER.encode("utf-8")
+            if delimiter in data:
+                message_part, _ = data.split(delimiter, 1)
+                return message_part.decode("utf-8", errors="ignore")
 
             # Prevent reading too much data
             if len(data) > 1024 * 1024:  # 1MB limit

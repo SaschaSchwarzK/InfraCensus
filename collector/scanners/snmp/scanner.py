@@ -306,33 +306,3 @@ class SnmpScanner(BaseScanner):
             return True
         except ValueError:
             return is_valid_hostname(target)
-
-
-class SNMPProtocol(asyncio.DatagramProtocol):
-    """Simple UDP protocol for SNMP communication."""
-
-    def __init__(self) -> None:
-        self.response_received: asyncio.Future[bytes] = asyncio.Future()
-        self.transport: asyncio.BaseTransport | None = None
-
-    def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        """Called when connection is established."""
-        self.transport = transport
-
-    def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
-        """Called when a datagram is received."""
-        if not self.response_received.done():
-            self.response_received.set_result(data)
-
-    def error_received(self, exc: Exception) -> None:
-        """Called when an error is received."""
-        if not self.response_received.done():
-            self.response_received.set_exception(exc)
-
-    def connection_lost(self, exc: Exception | None) -> None:
-        """Called when connection is lost."""
-        if not self.response_received.done():
-            if exc:
-                self.response_received.set_exception(exc)
-            else:
-                self.response_received.set_exception(ConnectionError("Connection lost"))

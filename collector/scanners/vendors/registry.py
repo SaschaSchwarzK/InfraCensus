@@ -51,39 +51,35 @@ class VendorScannerRegistry:
         """
         from collector.scanners.vendors.base import DeviceScanResult
 
-        # Try each registered scanner
-        for scanner_class in self._scanners:
-            scanner = scanner_class()
+        if not self._scanners:
+            return None, DeviceScanResult(
+                success=False,
+                error="No compatible vendor scanner found for device",
+            )
 
-            try:
-                # Try to detect if this scanner can handle the device
-                # We need to connect first
-                conn = await scanner._connect(
-                    host, username, password, ssh_key, port, timeout
-                )
+        conn = None
+        try:
+            # Establish a single connection for detection and scanning
+            conn = await self._scanners[0]()._connect(
+                host, username, password, ssh_key, port, timeout
+            )
 
+            # Try each registered scanner using the same connection
+            for scanner_class in self._scanners:
+                scanner = scanner_class()
                 try:
                     if await scanner.detect_device_type(conn):
-                        # This scanner can handle it, close connection and do full scan
-                        await conn.close()
-
-                        result = await scanner.scan_device(
-                            host=host,
-                            username=username,
-                            password=password,
-                            ssh_key=ssh_key,
+                        result = await scanner._scan_with_connection(
+                            conn=conn,
                             enable_password=enable_password,
-                            port=port,
-                            timeout=timeout,
                         )
                         return scanner, result
-                finally:
-                    await conn.close()
-
-            except Exception as exc:
-                # This scanner failed, try next
-                logger.debug("vendor.scanner.error", exc_info=exc)
-                continue
+                except Exception as exc:
+                    logger.debug("vendor.scanner.error", exc_info=exc)
+                    continue
+        finally:
+            if conn:
+                await conn.close()
 
         # No scanner could handle this device
         return None, DeviceScanResult(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import re
+import shlex
 import shutil
 import subprocess  # nosec B404
 import time
@@ -97,7 +98,7 @@ class NmapScanner(BaseScanner):
             # Basic validation to prevent command injection
             if not self._validate_nmap_args(extra_args):
                 raise ValueError(f"Invalid nmap arguments: {extra_args}")
-            args.extend(extra_args.split())
+            args.extend(shlex.split(extra_args))
 
         # Always request XML output
         args.extend(["-oX", "-"])
@@ -127,7 +128,7 @@ class NmapScanner(BaseScanner):
             r"^-d+$",  # Debugging
         ]
 
-        for arg in args.split():
+        for arg in shlex.split(args):
             if not any(re.match(pattern, arg) for pattern in allowed_patterns):
                 return False
 

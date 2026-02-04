@@ -234,6 +234,35 @@ class VendorScanner(ABC):
         """Collect MAC address table."""
         pass
 
+    async def _scan_with_connection(
+        self,
+        conn: SSHConnection,
+        enable_password: str | None = None,
+    ) -> DeviceScanResult:
+        """Run scan steps using an existing SSH connection."""
+        try:
+            if enable_password:
+                await conn.enter_enable_mode()
+
+            device_info = await self.collect_device_info(conn)
+            interfaces = await self.collect_interfaces(conn)
+            neighbors = await self.collect_neighbors(conn)
+            modules = await self.collect_modules(conn)
+            arp_table = await self.collect_arp_table(conn)
+            mac_table = await self.collect_mac_table(conn)
+
+            return DeviceScanResult(
+                success=True,
+                device_info=device_info,
+                interfaces=interfaces,
+                neighbors=neighbors,
+                modules=modules,
+                arp_table=arp_table,
+                mac_table=mac_table,
+            )
+        except Exception as e:
+            return DeviceScanResult(success=False, error=str(e))
+
     async def scan_device(
         self,
         host: str,
@@ -271,26 +300,9 @@ class VendorScanner(ABC):
                     error=f"Device not compatible with {self.vendor_name} scanner",
                 )
 
-            # Enter enable mode if possible
-            if enable_password:
-                await conn.enter_enable_mode()
-
-            # Collect all information
-            device_info = await self.collect_device_info(conn)
-            interfaces = await self.collect_interfaces(conn)
-            neighbors = await self.collect_neighbors(conn)
-            modules = await self.collect_modules(conn)
-            arp_table = await self.collect_arp_table(conn)
-            mac_table = await self.collect_mac_table(conn)
-
-            return DeviceScanResult(
-                success=True,
-                device_info=device_info,
-                interfaces=interfaces,
-                neighbors=neighbors,
-                modules=modules,
-                arp_table=arp_table,
-                mac_table=mac_table,
+            return await self._scan_with_connection(
+                conn=conn,
+                enable_password=enable_password,
             )
 
         except Exception as e:

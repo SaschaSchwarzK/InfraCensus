@@ -8,7 +8,7 @@ WORKDIR /app
 
 COPY pyproject.toml poetry.lock /app/
 RUN pip install --no-cache-dir poetry && \
-    poetry install --only central --no-root --no-interaction
+    poetry install --with central --no-root --no-interaction
 
 
 FROM python:3.14-slim AS runner
