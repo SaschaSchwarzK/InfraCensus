@@ -158,6 +158,44 @@ class TestSnmpScannerImproved:
         result = results[0]
         assert result.data.get("credential_source") == "central"
 
+    @pytest.mark.asyncio
+    async def test_snmp_uses_v3_credentials(self, monkeypatch):
+        """Test SNMP scanner uses v3 credentials when provided."""
+        scanner = SnmpScanner()
+
+        credentials = {
+            "192.0.2.1": [
+                {
+                    "username": "snmpuser",
+                    "auth_key": "authpass",
+                    "priv_key": "privpass",
+                    "auth_protocol": "sha",
+                    "priv_protocol": "aes",
+                }
+            ],
+        }
+
+        async def fake_snmp_get(_target, _port, _community, _timeout, v3_params):
+            assert v3_params is not None
+            assert v3_params.get("username") == "snmpuser"
+            return None
+
+        monkeypatch.setattr(scanner, "_snmp_get", fake_snmp_get)
+
+        results = await scanner.scan(
+            ["192.0.2.1"],
+            {
+                "port": 161,
+                "timeout": 1,
+                "retries": 0,
+                "credentials_by_target": credentials,
+            },
+        )
+
+        assert len(results) == 1
+        result = results[0]
+        assert result.data.get("credential_source") == "central"
+
 
 class TestNmapScannerImproved:
     """Tests for improved Nmap scanner."""
@@ -257,6 +295,25 @@ class TestNetconfScannerImproved:
         assert "urn:ietf:params:netconf:base:1.0" in capabilities
         assert "urn:ietf:params:netconf:base:1.1" in capabilities
         assert session_id == "12345"
+
+    @pytest.mark.asyncio
+    async def test_netconf_parses_namespaced_xml(self):
+        """Test NETCONF parser handles namespaces and attributes."""
+        scanner = NetconfScanner()
+
+        sample = """<?xml version="1.0" encoding="UTF-8"?>
+<hello xmlns="urn:ietf:params:xml:ns:netconf:base:1.0" xmlns:ex="urn:example">
+  <capabilities>
+    <capability>urn:ietf:params:netconf:base:1.0</capability>
+    <capability>urn:ietf:params:netconf:base:1.1</capability>
+  </capabilities>
+  <session-id ex:attr="value">6789</session-id>
+</hello>]]>]]>"""
+
+        capabilities, session_id = scanner._parse_hello_response(sample)
+        assert session_id == "6789"
+        assert "urn:ietf:params:netconf:base:1.0" in capabilities
+        assert "urn:ietf:params:netconf:base:1.1" in capabilities
 
 
 class TestConcurrentScanning:

@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 from collector.scanners.base import BaseScanner, ScanResult
+from collector.scanners.utils import is_valid_hostname
 
 
 class SshScanner(BaseScanner):
@@ -91,15 +92,12 @@ class SshScanner(BaseScanner):
 
         start = time.perf_counter()
         target_creds = credentials.get(target) or []
-        has_credentials = (
-            bool(
-                target_creds
-                and target_creds[0].get("ssh_key")
-                or target_creds[0].get("password")
+        has_credentials = False
+        if target_creds:
+            first_cred = target_creds[0]
+            has_credentials = bool(
+                first_cred.get("ssh_key") or first_cred.get("password")
             )
-            if target_creds
-            else False
-        )
 
         try:
             # Connect to SSH port
@@ -210,5 +208,4 @@ class SshScanner(BaseScanner):
                 return False
             return True
         except ValueError:
-            # Not a valid IP address
-            return False
+            return is_valid_hostname(target)

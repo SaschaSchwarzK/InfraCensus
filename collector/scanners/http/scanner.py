@@ -12,6 +12,7 @@ from typing import Any
 import aiohttp
 
 from collector.scanners.base import BaseScanner, ScanResult
+from collector.scanners.utils import is_valid_hostname
 
 
 class HttpScanner(BaseScanner):
@@ -87,7 +88,6 @@ class HttpScanner(BaseScanner):
                         use_https,
                         follow_redirects,
                         max_redirects,
-                        timeout,
                     )
                 )
                 tasks.append(task)
@@ -120,7 +120,6 @@ class HttpScanner(BaseScanner):
         use_https: bool,
         follow_redirects: bool,
         max_redirects: int,
-        timeout: int,
     ) -> ScanResult:
         """Scan a single target for HTTP/HTTPS service."""
         # Validate target
@@ -272,12 +271,4 @@ class HttpScanner(BaseScanner):
         except ValueError:
             # Not an IP address, validate as hostname
             # Allow hostnames for flexibility but validate format
-            if not target or len(target) > 253:
-                return False
-            # Check for valid hostname characters
-            if not re.match(
-                r"^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$",
-                target,
-            ):
-                return False
-            return True
+            return is_valid_hostname(target)

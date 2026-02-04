@@ -7,7 +7,37 @@ import ipaddress
 import time
 from typing import Any
 
+from pysnmp.hlapi.asyncio import (
+    CommunityData,
+    ContextData,
+    ObjectIdentity,
+    ObjectType,
+    SnmpEngine,
+    UdpTransportTarget,
+    UsmUserData,
+    getCmd,
+    usmAesCfb128Protocol,
+    usmDESPrivProtocol,
+    usmHMACMD5AuthProtocol,
+    usmHMACSHAAuthProtocol,
+    usmNoAuthProtocol,
+    usmNoPrivProtocol,
+)
+
 from collector.scanners.base import BaseScanner, ScanResult
+from collector.scanners.utils import is_valid_hostname
+
+_AUTH_PROTOCOLS = {
+    "sha": usmHMACSHAAuthProtocol,
+    "md5": usmHMACMD5AuthProtocol,
+    "none": usmNoAuthProtocol,
+}
+
+_PRIV_PROTOCOLS = {
+    "aes": usmAesCfb128Protocol,
+    "des": usmDESPrivProtocol,
+    "none": usmNoPrivProtocol,
+}
 
 
 class SnmpScanner(BaseScanner):
@@ -105,11 +135,22 @@ class SnmpScanner(BaseScanner):
 
         # Get community string from credentials or use default
         target_creds = credentials.get(target) or []
+        has_creds = bool(target_creds)
         community = (
             str(target_creds[0].get("community"))
             if target_creds and target_creds[0].get("community")
             else default_community
         )
+
+        v3_params = None
+        if target_creds and target_creds[0].get("username"):
+            v3_params = {
+                "username": target_creds[0].get("username"),
+                "auth_key": target_creds[0].get("auth_key"),
+                "priv_key": target_creds[0].get("priv_key"),
+                "auth_protocol": target_creds[0].get("auth_protocol"),
+                "priv_protocol": target_creds[0].get("priv_protocol"),
+            }
 
         # Try SNMP query with retries
         snmp_data = None
@@ -117,7 +158,9 @@ class SnmpScanner(BaseScanner):
 
         for attempt in range(retries + 1):
             try:
-                snmp_data = await self._snmp_get(target, port, community, timeout)
+                snmp_data = await self._snmp_get(
+                    target, port, community, timeout, v3_params
+                )
                 if snmp_data:
                     break
             except Exception as e:
@@ -138,9 +181,7 @@ class SnmpScanner(BaseScanner):
                     "port": port,
                     "protocol": "snmp",
                     "community": community,
-                    "credential_source": "central"
-                    if target_creds and target_creds[0].get("community")
-                    else "default",
+                    "credential_source": "central" if has_creds else "default",
                     **snmp_data,
                 },
                 error=None,
@@ -156,140 +197,94 @@ class SnmpScanner(BaseScanner):
                     "port": port,
                     "protocol": "snmp",
                     "community": community,
-                    "credential_source": "central"
-                    if target_creds and target_creds[0].get("community")
-                    else "default",
+                    "credential_source": "central" if has_creds else "default",
                 },
                 error=last_error or "No SNMP response",
             )
 
     async def _snmp_get(
-        self, target: str, port: int, community: str, timeout: int
+        self,
+        target: str,
+        port: int,
+        community: str,
+        timeout: int,
+        v3_params: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """
-        Perform SNMP GET request and parse response.
+        """Perform SNMP GET request and parse response using pysnmp."""
+        oids = [
+            self.OID_SYSTEM_DESCR,
+            self.OID_SYSTEM_UPTIME,
+            self.OID_SYSTEM_CONTACT,
+            self.OID_SYSTEM_NAME,
+            self.OID_SYSTEM_LOCATION,
+        ]
 
-        This is a simplified SNMP v1/v2c implementation.
-        For production use, consider using a proper SNMP library like pysnmp.
-        """
-
-        def _build_snmp_get_request(community: str, oid: str) -> bytes:
-            """Build a simple SNMP v2c GET request."""
-            # Convert OID string to bytes
-            oid_parts = [int(x) for x in oid.split(".")]
-            oid_bytes = bytearray()
-            oid_bytes.append(oid_parts[0] * 40 + oid_parts[1])
-            for part in oid_parts[2:]:
-                if part < 128:
-                    oid_bytes.append(part)
-                else:
-                    # Encode larger numbers
-                    encoded: list[int] = []
-                    while part > 0:
-                        encoded.insert(0, (part & 0x7F) | 0x80)
-                        part >>= 7
-                    encoded[-1] &= 0x7F
-                    oid_bytes.extend(encoded)
-
-            # Build SNMP packet structure (simplified)
-            # This is a basic implementation - production code should use a proper library
-            community_bytes = community.encode("utf-8")
-
-            # OID (Object Identifier)
-            oid_tlv = bytes([0x06, len(oid_bytes)]) + bytes(oid_bytes)
-
-            # NULL value for GET request
-            null_tlv = bytes([0x05, 0x00])
-
-            # Variable binding
-            varbind = bytes([0x30, len(oid_tlv) + len(null_tlv)]) + oid_tlv + null_tlv
-
-            # Variable binding list
-            varbind_list = bytes([0x30, len(varbind)]) + varbind
-
-            # PDU (GET request)
-            request_id = bytes([0x02, 0x01, 0x01])  # Request ID
-            error_status = bytes([0x02, 0x01, 0x00])  # Error status
-            error_index = bytes([0x02, 0x01, 0x00])  # Error index
-
-            pdu_data = request_id + error_status + error_index + varbind_list
-            pdu = bytes([0xA0, len(pdu_data)]) + pdu_data
-
-            # SNMP message
-            version = bytes([0x02, 0x01, 0x01])  # SNMPv2c
-            community_tlv = bytes([0x04, len(community_bytes)]) + community_bytes
-
-            message_data = version + community_tlv + pdu
-            message = bytes([0x30, len(message_data)]) + message_data
-
-            return message
-
-        def _parse_snmp_response(data: bytes) -> dict[str, str] | None:
-            """Parse SNMP response (simplified)."""
-            try:
-                # Very basic parsing - production code should use proper ASN.1 parser
-                # This just tries to extract string values from the response
-                result = {}
-
-                # Look for string values (0x04 type)
-                i = 0
-                while i < len(data) - 2:
-                    if data[i] == 0x04:  # OCTET STRING type
-                        length = data[i + 1]
-                        if i + 2 + length <= len(data):
-                            value = data[i + 2 : i + 2 + length]
-                            try:
-                                decoded = value.decode("utf-8", errors="ignore")
-                                if decoded and decoded.isprintable():
-                                    # Store first meaningful string as system description
-                                    if (
-                                        "system_description" not in result
-                                        and len(decoded) > 5
-                                    ):
-                                        result["system_description"] = decoded[:200]
-                                    break
-                            except (UnicodeDecodeError, ValueError):
-                                decoded = ""
-                        i += 2 + length
-                    else:
-                        i += 1
-
-                return result if result else None
-            except (ValueError, IndexError):
-                return None
-
-        # Perform SNMP query
-        try:
-            # Build request for sysDescr OID
-            request = _build_snmp_get_request(community, self.OID_SYSTEM_DESCR)
-
-            # Send UDP request
-            loop = asyncio.get_event_loop()
-            transport, protocol = await loop.create_datagram_endpoint(
-                lambda: SNMPProtocol(),
-                remote_addr=(target, port),
+        if v3_params and v3_params.get("username"):
+            username = str(v3_params.get("username"))
+            auth_key = v3_params.get("auth_key")
+            priv_key = v3_params.get("priv_key")
+            auth_protocol = _AUTH_PROTOCOLS.get(
+                str(v3_params.get("auth_protocol", "sha")).lower(),
+                usmHMACSHAAuthProtocol,
             )
-
-            try:
-                # Send request
-                transport.sendto(request)
-
-                # Wait for response
-                response = await asyncio.wait_for(
-                    protocol.response_received,
-                    timeout=timeout,
+            priv_protocol = _PRIV_PROTOCOLS.get(
+                str(v3_params.get("priv_protocol", "aes")).lower(),
+                usmAesCfb128Protocol,
+            )
+            if auth_key:
+                if priv_key:
+                    user = UsmUserData(
+                        username,
+                        str(auth_key),
+                        str(priv_key),
+                        authProtocol=auth_protocol,
+                        privProtocol=priv_protocol,
+                    )
+                else:
+                    user = UsmUserData(
+                        username,
+                        str(auth_key),
+                        authProtocol=auth_protocol,
+                        privProtocol=usmNoPrivProtocol,
+                    )
+            else:
+                user = UsmUserData(
+                    username,
+                    authProtocol=usmNoAuthProtocol,
+                    privProtocol=usmNoPrivProtocol,
                 )
+        else:
+            user = CommunityData(community, mpModel=1)
 
-                # Parse response
-                return _parse_snmp_response(response)
+        transport = UdpTransportTarget((target, port), timeout=timeout, retries=0)
+        error_indication, error_status, error_index, var_binds = await getCmd(
+            SnmpEngine(),
+            user,
+            transport,
+            ContextData(),
+            *[ObjectType(ObjectIdentity(oid)) for oid in oids],
+        )
 
-            finally:
-                transport.close()
-
-        except TimeoutError:
+        if error_indication or error_status:
             return None
-        except Exception:
-            return None
+
+        result: dict[str, Any] = {}
+        for oid, value in var_binds:
+            oid_str = str(oid)
+            if oid_str == self.OID_SYSTEM_DESCR:
+                result["system_description"] = str(value)
+            elif oid_str == self.OID_SYSTEM_UPTIME:
+                result["system_uptime"] = str(value)
+            elif oid_str == self.OID_SYSTEM_CONTACT:
+                result["system_contact"] = str(value)
+            elif oid_str == self.OID_SYSTEM_NAME:
+                result["system_name"] = str(value)
+            elif oid_str == self.OID_SYSTEM_LOCATION:
+                result["system_location"] = str(value)
+            else:
+                result[oid_str] = str(value)
+
+        return result or None
 
     def _is_valid_target(self, target: str) -> bool:
         """
@@ -310,7 +305,7 @@ class SnmpScanner(BaseScanner):
                 return False
             return True
         except ValueError:
-            return False
+            return is_valid_hostname(target)
 
 
 class SNMPProtocol(asyncio.DatagramProtocol):

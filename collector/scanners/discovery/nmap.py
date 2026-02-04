@@ -13,6 +13,7 @@ from typing import Any
 from defusedxml import ElementTree as ET
 
 from collector.scanners.base import BaseScanner, ScanResult
+from collector.scanners.utils import is_valid_hostname
 
 
 class NmapScanner(BaseScanner):
@@ -113,12 +114,17 @@ class NmapScanner(BaseScanner):
 
         # Only allow known safe nmap options
         allowed_patterns = [
-            r"^-[sSTUACPO]$",  # Scan types
-            r"^-sV$",  # Service detection
-            r"^-p[\d,-]+$",  # Port specifications
-            r"^--[\w-]+$",  # Long options
-            r"^-[Ff]$",  # Fast/full scan
-            r"^-[vd]+$",  # Verbosity/debugging
+            r"^-s[STUACPOVN]$",  # Scan types (-sS, -sT, -sV, etc.)
+            r"^-p-?[\d,-]+$",  # Port specifications (e.g., -p80,443, -p-)
+            r"^--[\w-]+(=[\w,-]+)?$",  # Long options (e.g., --script=default)
+            r"^-F$",  # Fast scan
+            r"^-A$",  # Aggressive scan
+            r"^-O$",  # OS Detection
+            r"^-T[0-5]$",  # Timing template
+            r"^-n$",  # No DNS resolution
+            r"^-R$",  # Reverse DNS resolution
+            r"^-v+$",  # Verbosity
+            r"^-d+$",  # Debugging
         ]
 
         for arg in args.split():
@@ -171,7 +177,7 @@ class NmapScanner(BaseScanner):
         try:
             ipaddress.ip_address(target)
         except ValueError:
-            if not re.fullmatch(r"[A-Za-z0-9.-]+", target):
+            if not is_valid_hostname(target):
                 return False, "", "invalid_target"
 
         def _run() -> tuple[bool, str, str | None]:

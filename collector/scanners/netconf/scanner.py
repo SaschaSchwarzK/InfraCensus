@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
-import re
 import time
 from typing import Any
 
+from defusedxml import ElementTree as ET
+
 from collector.scanners.base import BaseScanner, ScanResult
+from collector.scanners.utils import is_valid_hostname
 
 
 class NetconfScanner(BaseScanner):
@@ -218,22 +220,26 @@ class NetconfScanner(BaseScanner):
         Returns:
             Tuple of (capabilities list, session_id)
         """
-        capabilities = []
-        session_id = None
+        capabilities: list[str] = []
+        session_id: str | None = None
 
-        # Extract session ID
-        session_match = re.search(r"<session-id>(\d+)</session-id>", response)
-        if session_match:
-            session_id = session_match.group(1)
+        if self.MSG_DELIMITER in response:
+            response = response.split(self.MSG_DELIMITER)[0]
 
-        # Extract capabilities
-        capability_pattern = r"<capability>([^<]+)</capability>"
-        capability_matches = re.findall(capability_pattern, response)
+        try:
+            root = ET.fromstring(response)
+        except ET.ParseError:
+            return capabilities, session_id
 
-        for cap in capability_matches:
-            cap = cap.strip()
-            if cap:
-                capabilities.append(cap)
+        session_elem = root.find(".//{*}session-id")
+        if session_elem is not None and session_elem.text:
+            session_id = session_elem.text.strip()
+
+        for cap_elem in root.findall(".//{*}capability"):
+            if cap_elem.text:
+                cap = cap_elem.text.strip()
+                if cap:
+                    capabilities.append(cap)
 
         return capabilities, session_id
 
@@ -257,5 +263,4 @@ class NetconfScanner(BaseScanner):
                 return False
             return True
         except ValueError:
-            # Not a valid IP address
-            return False
+            return is_valid_hostname(target)
