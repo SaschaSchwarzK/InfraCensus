@@ -1,0 +1,57 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: infracensus
+      POSTGRES_USER: infracensus
+      POSTGRES_PASSWORD: infracensus
+    ports:
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U infracensus -d infracensus"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  central:
+    build:
+      context: .
+      dockerfile: deploy/docker/central.Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "18000:8000"
+    environment:
+      ENVIRONMENT: test
+      CENTRAL_CONFIG_FILE: /app/config/central.yaml
+      DATABASE_URL: postgresql+psycopg://infracensus:infracensus@postgres:5432/infracensus
+      SESSION_SECRET: test-session-secret-0123456789abcdef
+      CA_KEY_PATH: /var/lib/infracensus/ca/ca.key
+      CA_CERT_PATH: /var/lib/infracensus/ca/ca.crt
+      CA_ALLOW_ABSOLUTE_PATHS: "1"
+    volumes:
+      - ${E2E_ROOT:-/tmp/infracensus-e2e}/central-ca:/var/lib/infracensus/ca
+
+  collector:
+    build:
+      context: .
+      dockerfile: deploy/docker/collector.Dockerfile
+    depends_on:
+      central:
+        condition: service_started
+    environment:
+      COLLECTOR_CONFIG_FILE: /app/config/collector.yaml
+      CENTRAL_URL: http://central:8000/api/v1
+      ENROLLMENT_TOKEN: ${ENROLLMENT_TOKEN}
+      VERIFY_SSL: "false"
+      POLL_INTERVAL: "2"
+      COLLECTOR_NAME: e2e-collector
+      COLLECTOR_LABELS: capacity=2
+      COLLECTOR_CAPABILITIES: ping
+      HEALTH_HOST: 0.0.0.0
+      CERTS_PATH: /collector/certs
+      STORAGE_PATH: /collector/data
+    volumes:
+      - ${E2E_ROOT:-/tmp/infracensus-e2e}/collector-certs:/collector/certs
+      - ${E2E_ROOT:-/tmp/infracensus-e2e}/collector-data:/collector/data

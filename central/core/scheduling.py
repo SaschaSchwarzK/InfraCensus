@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import or_
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from central.core.config import settings
 from central.core.metrics import job_assigned_counter
@@ -101,7 +101,7 @@ def select_jobs_for_collector(
         candidates_query = (
             session.query(ScanScheduleType)
             .join(ScanSchedule)
-            .options(joinedload(ScanScheduleType.schedule))
+            .options(selectinload(ScanScheduleType.schedule))
             .filter(ScanSchedule.tenant_id == tenant_id)
             .filter(ScanSchedule.finished_at_utc.is_(None))
             .filter(ScanScheduleType.finished_at_utc.is_(None))
