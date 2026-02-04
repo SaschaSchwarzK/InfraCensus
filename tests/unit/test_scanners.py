@@ -258,6 +258,19 @@ class TestNmapScannerImproved:
         assert "-sV" in args
         assert "-p" in args
 
+    @pytest.mark.asyncio
+    async def test_nmap_target_validation_blocks_local_ranges(self):
+        scanner = NmapScanner()
+        ok, _, err = await scanner._run_nmap("127.0.0.1", 1, [])
+        assert ok is False
+        assert err == "invalid_target"
+        ok, _, err = await scanner._run_nmap("224.0.0.1", 1, [])
+        assert ok is False
+        assert err == "invalid_target"
+        ok, _, err = await scanner._run_nmap("169.254.10.1", 1, [])
+        assert ok is False
+        assert err == "invalid_target"
+
 
 class TestNetconfScannerImproved:
     """Tests for improved NETCONF scanner."""

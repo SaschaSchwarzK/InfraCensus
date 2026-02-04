@@ -176,7 +176,11 @@ class NmapScanner(BaseScanner):
             return False, "", "invalid_target"
 
         try:
-            ipaddress.ip_address(target)
+            ip = ipaddress.ip_address(target)
+            if ip.is_loopback or ip.is_link_local:
+                return False, "", "invalid_target"
+            if ip.is_multicast or ip.is_reserved:
+                return False, "", "invalid_target"
         except ValueError:
             if not is_valid_hostname(target):
                 return False, "", "invalid_target"
