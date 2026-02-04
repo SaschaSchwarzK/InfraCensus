@@ -213,3 +213,4 @@ Agent*
 *.md
 /ca
 /private
+.DS_Store
