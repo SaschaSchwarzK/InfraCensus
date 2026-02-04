@@ -50,6 +50,7 @@ class ApiClient:
         self._request_metrics: dict[tuple[str, int], dict[str, float]] = {}
         self._metrics_lock = Lock()
         self._default_headers = default_headers or {}
+        self._identity_headers = self._load_identity_headers()
 
     async def __aenter__(self) -> ApiClient:
         return self
@@ -102,7 +103,8 @@ class ApiClient:
             try:
                 start = time.perf_counter()
                 headers = dict(self._default_headers)
-                self._maybe_add_identity_headers(headers)
+                if self._identity_headers:
+                    headers.update(self._identity_headers)
                 headers.setdefault(
                     "x-timestamp",
                     datetime.now(UTC).isoformat().replace("+00:00", "Z"),
@@ -173,26 +175,26 @@ class ApiClient:
             self._circuit_open_until and time.monotonic() < self._circuit_open_until
         )
 
-    def _maybe_add_identity_headers(self, headers: dict[str, str]) -> None:
-        if headers.get("x-client-cert-serial") and headers.get(
-            "x-client-cert-fingerprint"
-        ):
-            return
+    def _load_identity_headers(self) -> dict[str, str]:
+        if self._default_headers.get(
+            "x-client-cert-serial"
+        ) and self._default_headers.get("x-client-cert-fingerprint"):
+            return {}
         if not self._cert:
-            return
+            return {}
         cert_path = Path(self._cert[0])
         if not cert_path.exists():
-            return
+            return {}
         try:
             from cryptography import x509
             from cryptography.hazmat.primitives import hashes
-        except Exception:
-            return
+        except ImportError:
+            return {}
         try:
             cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
         except (ValueError, OSError):
-            return
-        headers.setdefault("x-client-cert-serial", format(cert.serial_number, "x"))
-        headers.setdefault(
-            "x-client-cert-fingerprint", cert.fingerprint(hashes.SHA256()).hex()
-        )
+            return {}
+        return {
+            "x-client-cert-serial": format(cert.serial_number, "x"),
+            "x-client-cert-fingerprint": cert.fingerprint(hashes.SHA256()).hex(),
+        }
